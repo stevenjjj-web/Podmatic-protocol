@@ -442,8 +442,9 @@ def run_once(sc: Scenario, seed: int):
 
 SCENARIOS = [
     Scenario("基准：日均400抽，LP 2万", 400, 20000),
-    Scenario("冷启动A：日均100抽，种子储备$500(10倍单抽)，无LP", 100, 500, risk=1.0, creator_seeded=True),
-    Scenario("冷启动B：日均100抽，种子储备$2,000(40倍单抽)，无LP", 100, 2000, risk=1.0, creator_seeded=True),
+    Scenario("冷启动A：日均100抽，种子储备$500(10倍单抽)，风险系数1.0", 100, 500, risk=1.0, creator_seeded=True),
+    Scenario("冷启动B：日均100抽，种子储备$2,000(40倍单抽)，风险系数1.0", 100, 2000, risk=1.0, creator_seeded=True),
+    Scenario("冷启动C：日均100抽，种子储备$5,000(100倍单抽)，风险系数0.1", 100, 5000, risk=0.1, creator_seeded=True),
     Scenario("小机器：日均100抽，LP 1万", 100, 10000),
     Scenario("大机器：日均1500抽，LP 5万", 1500, 50000),
     Scenario("供给不足：挂卡到达率减半", 400, 20000, supply_mult=0.5),
@@ -498,7 +499,8 @@ def report_sim(runs):
             dd_cell = f"{fmt_pct(np.median(dds), 0)} / {fmt_pct(np.min(dds), 0)}"
         else:
             nav = [r["nav_end"] for r in res]
-            nav_cell = f"主理人份额 ${np.median(nav):,.0f} / ${np.min(nav):,.0f}"
+            usd = lambda x: f"-${-x:,.0f}" if x < 0 else f"${x:,.0f}"
+            nav_cell = f"种子储备净值 {usd(np.median(nav))} / {usd(np.min(nav))}"
             dd_cell = "—"
         creator = np.median([r["stats"]["creator"] / months for r in res])
         proto = np.median([r["stats"]["protocol"] / months for r in res])
