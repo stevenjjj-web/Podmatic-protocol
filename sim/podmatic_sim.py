@@ -144,6 +144,8 @@ class Scenario:
     preset: str = "标准"
     rtp: float = 0.89  # 抽取部分的返还率（按参考价），不含保底池
     creator_seeded: bool = False  # 储备全部来自主理人的种子资金，没有外部LP
+    sellback: float = SELLBACK_RATE  # 现金卖回比例；v3 定价层下为型号池买入价，约 96%
+    tradein: float = TRADEIN_RATE
 
 
 class TierBook:
@@ -395,15 +397,15 @@ def run_once(sc: Scenario, seed: int):
             cost_basis = min(ask, v)
             u = rng.random()
             if u < P_SELLBACK:
-                amt = SELLBACK_RATE * cost_basis
+                amt = sc.sellback * cost_basis
                 # 卖回缓冲：现金卖回后储备仍需不低于 SELLBACK_BUFFER 抽，否则改为以卡换抽
                 if reserve - amt >= SELLBACK_BUFFER * P:
                     reserve -= amt
                 else:
-                    credit += TRADEIN_RATE * cost_basis
+                    credit += sc.tradein * cost_basis
                 books[k].add(v0, v, False, t, 1e9)
             elif u < P_SELLBACK + P_TRADEIN:
-                credit += TRADEIN_RATE * cost_basis
+                credit += sc.tradein * cost_basis
                 books[k].add(v0, v, False, t, 1e9)
 
         # 5) 库存收益：各档按覆盖天数定年化，按参考价分给在架的第三方寄售卡。
@@ -450,6 +452,7 @@ SCENARIOS = [
     Scenario("供给不足：挂卡到达率减半", 400, 20000, supply_mult=0.5),
     Scenario("熊市：90天卡价下跌25%", 400, 20000, drift=math.log(0.75)),
     Scenario("竞争后：抽取返还率提到93%", 400, 20000, rtp=0.93),
+    Scenario("v3市价卖回：卖回96%、换抽97%", 400, 20000, sellback=0.96, tradein=0.97),
 ]
 
 
