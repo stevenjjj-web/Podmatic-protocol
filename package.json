@@ -1,0 +1,10 @@
+{
+  "name": "podmatic-protocol",
+  "private": true,
+  "scripts": {
+    "setup": "npm --prefix contracts install && npm --prefix web install",
+    "dev": "node scripts/dev.mjs",
+    "test": "npm --prefix contracts test",
+    "build": "npm --prefix contracts run export-abis && npm --prefix web run build"
+  }
+}

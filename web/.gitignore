@@ -1,0 +1,7 @@
+node_modules
+dist
+src/generated/deployment.31337.json
+src/generated/collection.31337.json
+.env
+.env.local
+*.tsbuildinfo
