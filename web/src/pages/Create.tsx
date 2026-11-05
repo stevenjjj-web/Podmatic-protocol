@@ -10,9 +10,9 @@ import { fmtPct, fmtUsdc, parseUsdc } from "../lib/format";
 
 // Presets from docs/podmatic-v2-design.md section 4.4 (bps, sum 10000).
 const PRESETS: Record<string, { label: string; probs: number[]; desc: string }> = {
-  steady: { label: "稳健", probs: [6886, 2141, 730, 214, 29], desc: "中档卡多，约每 5 抽回本 1 次" },
-  standard: { label: "标准", probs: [7198, 1804, 702, 271, 25], desc: "接近 v1 示例机器" },
-  chase: { label: "追梦", probs: [8038, 1195, 498, 199, 70], desc: "传说概率接近 3 倍，普通卡更多" },
+  steady: { label: "Steady", probs: [6886, 2141, 730, 214, 29], desc: "More mid-tier prizes; about 1 in 5 spins breaks even" },
+  standard: { label: "Standard", probs: [7198, 1804, 702, 271, 25], desc: "Close to the v1 example machine" },
+  chase: { label: "Chase", probs: [8038, 1195, 498, 199, 70], desc: "Nearly 3x the legendary odds, more commons" },
 };
 // Tier bands as multiples of the single-pull price: 0.2-0.6 / 0.6-1.5 / 1.5-4 / 4-12 / 12-60.
 const BANDS = [[0.2, 0.6], [0.6, 1.5], [1.5, 4], [4, 12], [12, 60]];
@@ -23,7 +23,7 @@ export function Create() {
   const { deployment, collection } = useDeployment();
   const { run, busy } = useTx();
   const navigate = useNavigate();
-  const [name, setName] = useState("我的 Pod Apes 机器");
+  const [name, setName] = useState("My Pod Apes machine");
   const [price, setPrice] = useState("50");
   const [preset, setPreset] = useState("standard");
   const [rtp, setRtp] = useState(89);
@@ -40,7 +40,7 @@ export function Create() {
 
   async function submit() {
     if (!deployment?.demoCollection) return;
-    const r = await run(`创建机器「${name}」`, (w) =>
+    const r = await run(`Create machine "${name}"`, (w) =>
       w({
         address: deployment.factory,
         abi: factoryAbi,
@@ -65,24 +65,24 @@ export function Create() {
   return (
     <div className="stack" style={{ gap: 20 }}>
       <div>
-        <h1 className="h2">开一台机器</h1>
-        <div className="muted">不囤货、不垫钱。你定主题、概率形状和返还率，合约保证每一抽的期望值恰好等于目标；持有人把 NFT 挂进来，LP 提供储备，你按流水分成。</div>
+        <h1 className="h2">Create a machine</h1>
+        <div className="muted">No inventory, no upfront capital. You set the theme, odds shape and return; the contract keeps every spin's expected value at the target. Holders list NFTs, LPs fund the reserve, and you earn a share of flow.</div>
       </div>
       <div className="page-cols">
         <div className="card card-pad stack">
-          <div className="stack-sm"><div className="field-label">机器名称</div><input className="input" value={name} onChange={(e) => setName(e.target.value)} /></div>
+          <div className="stack-sm"><div className="field-label">Machine name</div><input className="input" value={name} onChange={(e) => setName(e.target.value)} /></div>
           <div className="stack-sm">
-            <div className="field-label">系列</div>
-            <div className="input muted">{collection?.name ?? "—"}（已在注册表登记特征快照）</div>
+            <div className="field-label">Collection</div>
+            <div className="input muted">{collection?.name ?? "—"} (trait snapshot registered)</div>
           </div>
           <div className="stack-sm">
-            <div className="field-label">单抽价（标准面额）</div>
+            <div className="field-label">Spin price (standard denominations)</div>
             <div className="segmented" style={{ alignSelf: "flex-start" }}>
               {DENOMS.map((d) => <button key={d} className={price === d ? "active" : ""} onClick={() => setPrice(d)}>${d}</button>)}
             </div>
           </div>
           <div className="stack-sm">
-            <div className="field-label">概率形状</div>
+            <div className="field-label">Odds shape</div>
             <div className="grid grid-3" style={{ gap: 8 }}>
               {Object.entries(PRESETS).map(([k, v]) => (
                 <button key={k} className={`panel stack-sm ${preset === k ? "selected-panel" : ""}`}
@@ -95,28 +95,28 @@ export function Create() {
             </div>
           </div>
           <div className="stack-sm">
-            <div className="between"><span className="field-label">目标返还率</span><span className="mono">{rtp}%</span></div>
+            <div className="between"><span className="field-label">Target return</span><span className="mono">{rtp}%</span></div>
             <input type="range" min={85} max={97} step={0.5} value={rtp} onChange={(e) => setRtp(Number(e.target.value))} />
           </div>
           <div className="grid grid-2">
             <div className="stack-sm">
-              <div className="between"><span className="field-label">主理人分成</span><span className="mono">{creatorFee}%</span></div>
+              <div className="between"><span className="field-label">Creator fee</span><span className="mono">{creatorFee}%</span></div>
               <input type="range" min={0} max={3} step={0.25} value={creatorFee} onChange={(e) => setCreatorFee(Number(e.target.value))} />
             </div>
             <div className="stack-sm">
-              <div className="between"><span className="field-label">风险系数</span><span className="mono">{risk}%</span></div>
+              <div className="between"><span className="field-label">Risk factor</span><span className="mono">{risk}%</span></div>
               <input type="range" min={5} max={25} step={1} value={risk} onChange={(e) => setRisk(Number(e.target.value))} />
             </div>
           </div>
-          <div className="small faint">风险系数：单件奖品结算额不超过储备的这个比例。只有种子储备时建议 10%。</div>
+          <div className="small faint">Risk factor: no single prize may settle for more than this share of the reserve. Use 10% when the reserve is only a seed.</div>
           <div className="stack-sm">
-            <div className="between"><span className="field-label">保底阈值</span><span className="mono">{pity === 0 ? "关闭" : `连续 ${pity} 抽`}</span></div>
+            <div className="between"><span className="field-label">Pity threshold</span><span className="mono">{pity === 0 ? "Off" : `${pity} spins`}</span></div>
             <input type="range" min={0} max={100} step={5} value={pity} onChange={(e) => { const v = Number(e.target.value); setPity(v > 0 && v < 20 ? 20 : v); }} />
-            <div className="small faint">连续这么多抽没出稀有及以上，下一抽只在稀有及以上档抽，额外成本由保底池（每抽 1%）支付。建议 40；可以开机后用 fundPity 预存保底池。</div>
+            <div className="small faint">After this many spins in a row without Rare or better, the next spin draws only from Rare and up; the pity pool (1% of each spin) pays the extra cost. 40 is a good default; you can pre-fund the pool with fundPity after launch.</div>
           </div>
         </div>
         <div className="card swap-card stack sticky">
-          <div className="h3">预览</div>
+          <div className="h3">Preview</div>
           <div className="stack-sm">
             {tiers.map((t, i) => (
               <div key={i} className="between small">
@@ -127,11 +127,11 @@ export function Create() {
             ))}
           </div>
           <div className="divider" />
-          <div className="kv"><span>每抽期望价值</span><span>${fmtUsdc((p * BigInt(Math.round(rtp * 100))) / 10000n)}</span></div>
-          <div className="kv"><span>每抽主理人收入</span><span>${fmtUsdc((p * BigInt(Math.round(creatorFee * 100))) / 10000n)}</span></div>
-          <div className="kv"><span>解锁传说档所需储备</span><span>${fmtUsdc((((tiers[4].maxValue * 103n) / 100n) * 100n) / BigInt(risk || 1), 0)}</span></div>
-          <button className="btn btn-primary btn-lg" disabled={!address || busy || !deployment?.demoCollection || p === 0n} onClick={submit}>创建机器</button>
-          <div className="small faint">参数创建后不可修改。合约会校验：档位不重叠、档内上下限比 ≤ 3（传说 ≤ 5）、最高奖品 ≤ 60 倍单抽价、返还率 85–97%。</div>
+          <div className="kv"><span>Expected value per spin</span><span>${fmtUsdc((p * BigInt(Math.round(rtp * 100))) / 10000n)}</span></div>
+          <div className="kv"><span>Creator income per spin</span><span>${fmtUsdc((p * BigInt(Math.round(creatorFee * 100))) / 10000n)}</span></div>
+          <div className="kv"><span>Reserve needed to unlock Legendary</span><span>${fmtUsdc((((tiers[4].maxValue * 103n) / 100n) * 100n) / BigInt(risk || 1), 0)}</span></div>
+          <button className="btn btn-primary btn-lg" disabled={!address || busy || !deployment?.demoCollection || p === 0n} onClick={submit}>Create machine</button>
+          <div className="small faint">Parameters cannot be changed after creation. The contract checks: tiers do not overlap, each band spans at most 3x (Legendary 5x), the top prize is at most 60x the spin price, and the return is 85–97%.</div>
         </div>
       </div>
     </div>

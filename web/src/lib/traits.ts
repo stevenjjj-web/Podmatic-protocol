@@ -6,14 +6,14 @@ export const COLLECTION_TRAIT = zeroHash;
 export const traitKey = (type: string, value: string): Hex => keccak256(toBytes(`${type}:${value}`));
 
 export function traitLabel(c: CollectionData | undefined, key: Hex): string {
-  if (key === COLLECTION_TRAIT) return "全系列（地板）";
+  if (key === COLLECTION_TRAIT) return "Any token (floor)";
   const l = c?.labels[key];
   if (!l) return `${key.slice(0, 10)}…`;
   const [type, value] = l.split(":");
   return `${TRAIT_NAMES[type] ?? type} · ${value}`;
 }
 
-export const TRAIT_NAMES: Record<string, string> = { Hat: "帽子", Fur: "毛色", Eyes: "眼睛" };
+export const TRAIT_NAMES: Record<string, string> = { Hat: "Hat", Fur: "Fur", Eyes: "Eyes" };
 
 export function tokenTraits(c: CollectionData | undefined, tokenId: number | bigint) {
   return c?.tokens[Number(tokenId)]?.traits;

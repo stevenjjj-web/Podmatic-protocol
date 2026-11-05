@@ -10,13 +10,13 @@ import { mockUsdcAbi } from "../generated/abis";
 import { fmtUsdc } from "../lib/format";
 
 const NAV = [
-  { to: "/", label: "抽卡", end: true },
-  { to: "/sell", label: "挂卡" },
-  { to: "/bids", label: "买单" },
-  { to: "/pool", label: "做市" },
-  { to: "/odds", label: "概率买" },
-  { to: "/vault", label: "金库" },
-  { to: "/create", label: "开机器" },
+  { to: "/", label: "Spin", end: true },
+  { to: "/sell", label: "Sell" },
+  { to: "/bids", label: "Bids" },
+  { to: "/pool", label: "Pool" },
+  { to: "/odds", label: "Odds" },
+  { to: "/vault", label: "Vault" },
+  { to: "/create", label: "Create" },
 ];
 
 function ThemeToggle() {
@@ -26,7 +26,7 @@ function ThemeToggle() {
     localStorage.setItem("theme", theme);
   }, [theme]);
   return (
-    <button className="icon-btn" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} aria-label="切换主题" title="切换主题">
+    <button className="icon-btn" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} aria-label="Toggle theme" title="Toggle theme">
       {theme === "dark" ? "☀" : "☾"}
     </button>
   );
@@ -40,7 +40,7 @@ function WalletButtons() {
         if (!account || !chain) {
           return (
             <button className="btn btn-soft" onClick={openConnectModal}>
-              连接钱包
+              Connect wallet
             </button>
           );
         }
@@ -49,7 +49,7 @@ function WalletButtons() {
           <div className="row">
             <button className="pill" onClick={openChainModal}>
               <span className="chain-dot" style={{ background: chain.unsupported ? "var(--critical)" : meta?.color }} />
-              <span className="hide-sm">{chain.unsupported ? "不支持的网络" : meta?.short ?? chain.name}</span>
+              <span className="hide-sm">{chain.unsupported ? "Unsupported network" : meta?.short ?? chain.name}</span>
               <span className="faint">▾</span>
             </button>
             <button className="pill" onClick={openAccountModal}>
@@ -69,15 +69,15 @@ function NetworkNotice() {
   if (isLocal && isError) {
     return (
       <div className="notice notice-bad" style={{ marginBottom: 16 }}>
-        连不上本地节点 http://127.0.0.1:8545。请在项目根目录运行 <code>npm run dev</code>（会启动节点、部署并填充演示数据）。
+        Cannot reach the local node at http://127.0.0.1:8545. Run <code>npm run dev</code> in the project root (it starts the node, deploys and seeds demo data).
       </div>
     );
   }
   if (!deployment) {
     return (
       <div className="notice notice-warn" style={{ marginBottom: 16 }}>
-        Podmatic 还没有部署到 {chainMeta[chainId]?.short ?? `链 ${chainId}`}。本地体验请切换到 Local 网络；
-        部署到 Ethereum / Base 见 README 的“部署”一节。
+        Podmatic is not deployed on {chainMeta[chainId]?.short ?? `chain ${chainId}`} yet. Switch to the Local network to try it;
+        see "Deploying to Ethereum / Base" in the README.
       </div>
     );
   }
@@ -98,12 +98,12 @@ function Faucet() {
           className="btn btn-sm btn-soft"
           disabled={busy}
           onClick={() =>
-            run("领取 10,000 测试 USDC", (w) =>
+            run("Claim 10,000 test USDC", (w) =>
               w({ address: deployment.quote, abi: mockUsdcAbi, functionName: "mint", args: [address, 10_000_000_000n] }),
             )
           }
         >
-          领测试币
+          Get test USDC
         </button>
       )}
     </div>
@@ -136,7 +136,7 @@ export function Layout() {
         <Outlet />
       </main>
       <footer className="footer">
-        Podmatic · 收藏品的做市协议 · 合约未经审计，请只在测试网和本地使用 ·{" "}
+        Podmatic · Market making for collectibles · Contracts are unaudited: use on testnets and locally only ·{" "}
         <a href="https://github.com/stevenjjj-web/Podmatic-protocol" target="_blank" rel="noreferrer">GitHub</a>
       </footer>
     </div>

@@ -1,274 +1,274 @@
-# 从 Tensor 学什么：用抽卡流量为 NFT 做市
+# Learning from Tensor: Market Making for NFTs, Funded by Gacha Flow
 
-> 本文研究 Tensor 的 NFT 流动性设计，提炼 Podmatic 能借鉴和必须避开的地方，并提出一组让各方都从新增资金里赚钱的机制。
-> 定价架构见 [`podmatic-pricing.md`](podmatic-pricing.md)。新模拟见 [`sim/mm_sim.py`](../sim/mm_sim.py)，结果见 [`sim/mm_results.md`](../sim/mm_results.md)。
-> Tensor 的产品细节来自其官方文档（2026-10-25 读取），市场数据来自第三方报道，见文末来源。
+> This document studies Tensor's NFT liquidity design, distills what Podmatic should borrow and what it must avoid, and proposes mechanisms where every party earns from new money.
+> Pricing architecture: [`podmatic-pricing.md`](podmatic-pricing.md). New simulation: [`sim/mm_sim.py`](../sim/mm_sim.py), results in [`sim/mm_results.md`](../sim/mm_results.md).
+> Tensor product details come from its official docs (read 2026-10-25); market data comes from third-party reporting, listed under Sources.
 
 ---
 
-## 0. 一页结论
+## 0. Summary
 
-**Tensor 做对了什么**：它把 NFT 交易从“一张张挂单、等人来买”变成了自动化的订单：
+**What Tensor got right**: it turned NFT trading from "list one item at a time and wait for a buyer" into automated orders:
 
-- 集合买单、挂单和双边做市订单都带价格曲线，每成交一笔自动调价；
-- 一笔资金可以同时支撑很多买单（共享担保金）；
-- 做市方自己定价差，挂单方不付平台费，吃单方付 2%。
+- collection bids, listings and two-sided market-making orders all carry a price curve and reprice after every fill;
+- one balance can back many bids at once (shared escrow);
+- makers set their own spread, makers pay no platform fee, and takers pay 2%.
 
-它还做了两个和我们直接相关的实验：
-- **YOLO Buy**：花一部分钱买到一个指定挂单 NFT 的中奖概率；
-- **Price Lock**：NFT 的 7 天期锁价交易。
+It also ran two experiments directly relevant to us:
+- **YOLO Buy**: pay part of the price for a chance to win one specific listed NFT;
+- **Price Lock**: 7-day locked-price trades on NFTs.
 
-**Tensor 没解决什么**：
-1. 它的自动做市只对地板款有效。官方文档明确提醒做市方**“永远不要把稀有 NFT 放进做市订单”**，否则别人会按订单价格买走稀有款，你换回一个普通款。
-2. 做市方的收益取决于有没有足够的成交，而 NFT 市场的成交大多来自懂行的交易者和刷积分的人。
+**What Tensor did not solve**:
+1. Its automated market making only works for floor items. The official docs explicitly warn makers **"never deposit a rare NFT"** into a market-making order: someone will buy the rare item at the order's price and you get a common one back.
+2. A maker's income depends on volume, and most NFT volume comes from informed traders and points farmers.
 
-**我们能补上的**：抽卡带来的是不看外部价格、为娱乐付费的**不知情流量**。模拟显示，同一个做市订单在 90 天里：
+**What we can add**: gacha brings **uninformed flow** that ignores outside prices and pays for entertainment. In simulation, the same market-making order over 90 days:
 
-| 抽卡流量 | 跑输一直持有的路径占比 |
+| Gacha flow | Paths underperforming holding |
 |---|---|
-| 没有抽卡流量 | 50% |
-| 每天 1 次抽卡从订单买走地板款 | 14% |
-| 每天 3 次 | 5% |
-| 每天 6 次 | 1% |
+| None | 50% |
+| 1 floor NFT bought from the order by spins per day | 14% |
+| 3 per day | 5% |
+| 6 per day | 1% |
 
-**五个机制**，按优先级排列：
+**Five mechanisms**, in priority order:
 
-1. **地板层开放给所有做市订单**：抽卡和玩家卖回的流量路由给报价最好的订单，不再只靠协议金库。
-2. **特征买单用共享担保金，被抽中时才圈定资金**：同样的资金能覆盖多得多的特征，让更多稀有款可以被定价。
-3. **概率买单（借鉴 YOLO Buy）**：任何挂出的 NFT，包括定不了价的稀有款，都能被买“中奖概率”，由金库承担波动。这比众筹票数更快、更灵活。
-4. **做市收入只来自真实流水，不发积分**：Blur 和 Tensor 都证明，靠积分招来的流动性会在激励结束时撤走。
-5. **让系列项目方成为参与者**：项目方可以出资挂地板和特征买单、赞助系列机器，换来新买家和版税。
+1. **Open the floor layer to every market-making order**: spin and sell-back flow routes to the best quotes instead of relying on the protocol vault alone.
+2. **Trait bids on shared escrow, earmarked only when drawn**: the same capital covers far more traits, so more rare items can be priced.
+3. **Odds buys (inspired by YOLO Buy)**: any listed NFT, including rare items no bid can price, can be bought as a probability, with the vault carrying the variance. Faster and more flexible than ticket raffles.
+4. **Market-making income only from real flow, no points**: Blur and Tensor both showed that liquidity bought with points leaves when the incentives end.
+5. **Bring collection teams in as participants**: teams can fund floor and trait bids and sponsor collection machines in exchange for new buyers and royalties.
 
 ---
 
-## 1. Tensor 的原理与创新
+## 1. How Tensor works and what it innovated
 
-### 1.1 三种自动化订单 ＋ 价格曲线
+### 1.1 Three automated order types + price curves
 
-Tensor 的 AMM（TensorSwap）有三种订单，都可以设置价格曲线：
+Tensor's AMM (TensorSwap) has three order types, all with configurable price curves:
 
-| 订单 | 做什么 | 曲线的作用 |
+| Order | What it does | What the curve does |
 |---|---|---|
-| 集合买单 | 按某价格买入系列里任意 NFT，可以买多个 | 每买到一个，出价自动下调 |
-| 挂单订单 | 一次挂出多个 NFT | 每卖出一个，价格自动上调 |
-| 双边做市订单 | 同时放 SOL 和 NFT，既买又卖 | 买卖都会移动价格，做市方赚买卖价差 |
+| Collection bid | Buys any NFT in the collection at a price, possibly several | Lowers the bid after each purchase |
+| Listing order | Lists several NFTs at once | Raises the price after each sale |
+| Two-sided market-making order | Holds SOL and NFTs, buys and sells | Both sides move the price; the maker earns the spread |
 
-曲线有两种（官方文档的例子）：
+Two curve types (examples from the official docs):
 
-- **线性**：每次固定加减一个 SOL 数。起价 1 SOL、步长 0.1 SOL 的买单，五次成交价为 1、0.9、0.8、0.7、0.6 SOL。
-- **指数**：每次按百分比变化。起价 1 SOL、步长 10% 的挂单，五次成交价为 1、1.1、1.21、1.331、1.4641 SOL。
+- **Linear**: a fixed SOL step. A bid starting at 1 SOL with a 0.1 SOL step fills at 1, 0.9, 0.8, 0.7, 0.6 SOL.
+- **Exponential**: a percentage step. A listing starting at 1 SOL with a 10% step fills at 1, 1.1, 1.21, 1.331, 1.4641 SOL.
 
-做市订单的卖价是当前价，买价是“当前价减一步，再扣掉做市价差费”。价差费由做市方自己设，范围 0–25%，官方建议 5% 左右。官方给的入门设置是：起价贴近全网地板价，步长约 5%，价差费约 5%。
+A market-making order sells at the current price and buys at "current price minus one step, less the spread fee". Makers set the spread fee themselves, from 0 to 25%; the docs suggest about 5%. The suggested starting setup is a start price near the global floor, a step of about 5% and a spread fee of about 5%.
 
-**本质**：Uniswap 的价格曲线是协议统一的；Tensor 让每个做市方带着自己的曲线和价差进场，相当于一个由许多小 AMM 组成的订单簿。
+**In essence**: Uniswap has one protocol-wide curve; Tensor lets each maker bring their own curve and spread, which amounts to an order book made of many small AMMs.
 
-### 1.2 费用结构：挂单零费，吃单付费
+### 1.2 Fees: makers free, takers pay
 
-- 挂单方（包括做市订单）0% 平台费，也不付版税；
-- 吃单方付 2% 平台费，并支付强制版税；可选版税由吃单方自己选择付全部、一半或不付。
+- Makers (including market-making orders) pay 0% platform fee and no royalties;
+- Takers pay a 2% platform fee and enforced royalties; for optional royalties, the taker chooses to pay all, half or none.
 
-这让提供流动性的一方没有成本，鼓励做市。
+Providing liquidity costs nothing, which encourages market making.
 
-### 1.3 共享担保金
+### 1.3 Shared escrow
 
-一笔 SOL 余额可以同时支撑多笔买单，包括集合买单、特征买单和单品买单：
+One SOL balance can back many bids at once, including collection, trait and single-item bids:
 
-- 只要单笔买单的金额不超过余额，所有买单都同时有效；
-- 余额被用掉、不足以支撑某笔买单时，这笔买单自动失效，其他照常；
-- 可以给每笔买单设购买上限，防止一笔买单把余额用光。
+- every bid whose price fits within the balance is active at the same time;
+- when the balance is used up and can no longer cover a bid, that bid deactivates and the rest stay live;
+- each bid can carry a purchase cap so one bid cannot drain the balance.
 
-**本质**：所有买单同时成交的概率很低，所以不需要为每笔买单足额备款。这和银行的部分准备金是同一个思路。
+**In essence**: all bids rarely fill at once, so they do not need to be fully funded individually. It is the same idea as fractional reserve banking.
 
-### 1.4 特征买单与集合买单
+### 1.4 Trait bids and collection bids
 
-可以对整个系列出价，也可以只对带某个特征的 NFT 出价。这让特征溢价第一次有了可执行的买方报价。我们的定价架构正是建立在这一点上。
+You can bid on the whole collection or only on NFTs with a given trait. For the first time, trait premiums had an executable buy-side quote. Our pricing architecture is built on exactly this.
 
-### 1.5 Price Lock：NFT 的锁价交易
+### 1.5 Price Lock: locked-price NFT trades
 
-固定 7 天期，用户只选价格，不选期限和费率，费率最低约 3.8%。可以做多也可以做空。团队前后做了 10–20 轮交互迭代才定下这个设计。
+Fixed 7-day terms; users choose only the price, not the term or fee; fees start at about 3.8%. Users can go long or short. The team went through 10–20 UX iterations before settling on the design.
 
-**启发**：NFT 用户能接受衍生品，但前提是规则极简。
+**Takeaway**: NFT users will accept derivatives, but only with extremely simple rules.
 
-### 1.6 YOLO Buy：概率购买
+### 1.6 YOLO Buy: probabilistic purchases
 
-- 对一个具体挂单出价，金额是挂单价的一部分；出价越高，中奖概率越高，范围 1%–75%；
-- 用可验证随机数（VRF），先承诺后揭示，链上可查；
-- 出价不退；没中也拿积分；
-- 挂单在 500 SOL 以下的都自动可用；
-- 通过 YOLO Buy 卖出时，卖家多拿 1.5%；
-- 不是所有地区都开放。
+- Bid on one specific listing for a fraction of its price; a higher bid means higher odds, from 1% to 75%;
+- uses verifiable randomness (VRF) with commit-reveal, verifiable on chain;
+- bids are non-refundable; losers still earn points;
+- every listing under 500 SOL is eligible;
+- sellers earn an extra 1.5% when sold through YOLO Buy;
+- not available in every region.
 
-**启发**：这已经是“单品抽”的雏形。买家看得到具体 NFT，自己决定花多少钱买多大概率。卖家拿到全价外加奖励，所以愿意参与。
+**Takeaway**: this is already the seed of a "single-item draw". The buyer sees the specific NFT and decides how much probability to buy. The seller gets the full price plus a bonus, so sellers participate.
 
-### 1.7 激励与代币
+### 1.7 Incentives and token
 
-- 挂在地板附近、24 小时成交量前 100 的挂单订单可以拿积分，越接近地板积分越多；
-- 2024 年 4 月发行 TNSR，总量 10 亿，空投 1.25 亿（12.5%）；
-- 据报道，2025 年末 Tensor 基金会收购了 Tensor 市场，平台费改为进入 TNSR 金库。
+- Listing orders near the floor in the top 100 by 24-hour volume earn points; closer to the floor earns more;
+- TNSR launched in April 2024 with a 1 billion supply and a 125 million (12.5%) airdrop;
+- reportedly, in late 2025 the Tensor Foundation acquired the Tensor marketplace and platform fees now go to the TNSR treasury.
 
-### 1.8 局限
+### 1.8 Limits
 
-| 局限 | 依据 |
+| Limit | Evidence |
 |---|---|
-| 自动做市只适用于地板款 | 官方：永远不要把稀有 NFT 放进做市订单 |
-| 做市收益高度依赖成交量 | 官方的年化例子：一个订单 2 天赚约 6.1%，外推年化约 1,100%，但前提是“成交速度保持不变”；市场单边行情会把订单打空，成交停下来收益就没了 |
-| 无常损失 | 官方的例子：地板从 4 跌到 1 时，做市方最后持有 4 个 NFT 价值 4，单纯持有则值 7 |
-| 积分招来的流动性不稳定 | Blur 的买单池曾在一天内被撤出超过 1,600 万美元，约占买方流动性的五分之一，主要来自一个占全市场约 40% 的刷积分地址 |
+| Automated market making only fits floor items | Official: never deposit a rare NFT into a market-making order |
+| Maker returns depend heavily on volume | The docs' APY example: an order earned about 6.1% in 2 days, about 1,100% annualized, but only "if it keeps trading at the same rate"; a one-way market empties the order, and when trading stops so does income |
+| Impermanent loss | The docs' example: when the floor falls from 4 to 1, the maker ends with 4 NFTs worth 4, while simply holding would be worth 7 |
+| Points-driven liquidity is unstable | Blur's bid pool once lost over $16 million in one day, about a fifth of buy-side liquidity, mostly from one points farmer that made up about 40% of the market |
 
 ---
 
-## 2. 能学什么、不能照搬什么
+## 2. What to borrow and what not to copy
 
-| Tensor 的做法 | Podmatic 的取舍 |
+| Tensor's approach | Podmatic's choice |
 |---|---|
-| 每个做市方自带曲线和价差 | **学**：地板层开放给所有做市订单，协议金库只是其中之一（第 4.1 节） |
-| 共享担保金 | **学，但要改**：特征买单要用来给抽中的 NFT 估值，所以被抽中时必须把资金圈定，不能让估值落空（第 4.2 节） |
-| 购买上限 | **学**：每笔特征买单都要有上限 |
-| 挂单零费、吃单付费 | **学**：持有人寄售、做市订单不付费；抽卡和直购付费 |
-| YOLO Buy | **学并扩展**：做成概率买单，由金库承担波动，接入抽卡机器的生态（第 4.3 节） |
-| Price Lock | **暂不做**：先做透抽卡和概率买单，衍生品放到后期 |
-| 积分激励 | **不学**：做市收入只来自真实流水（第 4.4 节） |
-| 只做地板 | **补上**：特征买单、概率买单覆盖地板以上的部分 |
+| Each maker brings a curve and spread | **Borrow**: open the floor layer to every market-making order; the protocol vault is just one maker (section 4.1) |
+| Shared escrow | **Borrow, with a change**: trait bids value drawn NFTs, so funds must be earmarked when an NFT is drawn, or the valuation could vanish (section 4.2) |
+| Purchase caps | **Borrow**: every trait bid has a cap |
+| Makers free, takers pay | **Borrow**: consignment and market-making orders are free; spins and direct buys pay |
+| YOLO Buy | **Borrow and extend**: odds buys backed by the vault and tied into the machine ecosystem (section 4.3) |
+| Price Lock | **Not yet**: get spins and odds buys right first, derivatives later |
+| Points incentives | **Do not copy**: market-making income only from real flow (section 4.4) |
+| Floor only | **Fill the gap**: trait bids and odds buys cover everything above the floor |
 
 ---
 
-## 3. 根本判断：NFT 缺的不是撮合，是不知情的买家
+## 3. The core judgement: NFTs lack uninformed buyers, not matching
 
-Tensor 已经把撮合做到了很高的水平，NFT 流动性仍然很差。原因有三个：
+Tensor has taken matching very far, yet NFT liquidity is still poor. Three reasons:
 
-1. **市场上几乎没有不知情的买家**。来买 NFT 的人大多懂行，做市方报价稍微过时就会被挑走好货。
-2. **稀有款在任何时刻都没有买家**。地板款每天都有成交，稀有款可能几个月没人问。
-3. **激励靠补贴**。积分和空投结束后，流动性随之撤走。
+1. **There are almost no uninformed buyers.** Most NFT buyers know what they are doing, and a slightly stale quote gets picked off.
+2. **Rare items have no buyer at any given moment.** Floor items trade daily; rare items can go months without interest.
+3. **Incentives are subsidies.** When points and airdrops end, liquidity leaves.
 
-抽卡正好提供了第一样东西：**玩家付钱买的是随机性和娱乐，不看外部价格**。这部分钱是 NFT 市场以前没有的新增资金，可以用来给做市方、估价方和卖家付费。
+Gacha supplies exactly the first: **players pay for randomness and entertainment, not for a specific price**. That is new money the NFT market never had, and it can pay market makers, appraisers and sellers.
 
-**模拟**（`sim/mm_sim.py`）：一个 Tensor 式的双边做市订单，初始 10 个地板价的现金加 10 个地板款，步长 3%，价差费 4%。地板价日波动 4%，套利者在外部的成本为 2%。跑 90 天、300 条路径：
+**Simulation** (`sim/mm_sim.py`): a Tensor-style two-sided market-making order starting with 10 floors of cash and 10 floor NFTs, a 3% step and a 4% spread fee. The floor moves 4% per day and arbitrageurs pay 2% outside. 90 days, 300 paths:
 
-| 每天抽卡从订单买走的地板款 | 相对一直持有的超额收益（中位） | P10 | 跑输持有的路径占比 |
+| Floor NFTs bought from the order by spins per day | Excess return vs holding (median) | P10 | Paths underperforming holding |
 |---|---|---|---|
 | 0 | −0.2% | −22.6% | 50% |
 | 1 | +17.1% | −5.0% | 14% |
 | 3 | +47.0% | +10.4% | 5% |
 | 6 | +103.8% | +63.8% | 1% |
 
-怎么读：
+How to read it:
 
-- **没有抽卡流量时，做市就是在赌方向**：一半路径跑输持有，最差一成路径亏两成以上。这就是 NFT 做市一直做不大的原因。
-- **有了抽卡流量，做市变成赚价差的生意**。
-- 收益率高，是因为做市资金相对流量很小。更多做市方进场后，价差会被压低，收益会下降。这正是我们想要的结果：竞争让抽卡机器买地板款的成本降低，省下的钱回到返还率里。
-- 模型没有考虑玩家卖回时的择时、地板价的跳变和多个做市订单之间的竞争，数字只说明方向。
+- **Without gacha flow, market making is a directional bet**: half the paths trail holding and the worst tenth lose over 20%. That is why NFT market making never scaled.
+- **With gacha flow, market making becomes a spread business.**
+- The returns are high because the maker's capital is small relative to the flow. As more makers arrive, spreads compress and returns fall. That is the outcome we want: competition lowers what machines pay for floor items, and the savings flow back into returns.
+- The model ignores sell-back timing, floor jumps and competition between orders; the numbers only show direction.
 
 ---
 
-## 4. 五个机制
+## 4. Five mechanisms
 
-### 4.1 地板层开放给所有做市订单
+### 4.1 Open the floor layer to every market-making order
 
-上一版的地板池只有一条由协议维护的曲线。现在改为：**任何人都可以挂 Tensor 式的做市订单**（自己的起价、步长、价差），协议把它们聚合成一个地板订单簿。
+The previous floor pool was a single protocol-maintained curve. Now **anyone can place a Tensor-style market-making order** (their own start price, step and spread), and the protocol aggregates them into a floor order book.
 
-- 抽卡机器需要地板款时，从最低卖价的订单买入；
-- 玩家抽中地板款想卖回时，卖给最高买价的订单；
-- 持有人的地板款寄售单也在同一个订单簿里，按底价排队；
-- 协议金库只是其中一个做市方。
+- When a machine needs a floor NFT, it buys from the order with the lowest ask;
+- when a player wins a floor NFT and sells it back, it goes to the order with the highest bid;
+- holders' floor consignments sit in the same book, queued by floor price;
+- the protocol vault is just one maker.
 
-**好处**：
-- 做市方之间竞争价差，机器买货的成本下降；
-- 风险分散到很多做市方身上，不再由一个金库独自承担；
-- 做市方可以直接复用在 Tensor 上的策略和经验。
+**Benefits**:
+- makers compete on spread, so machines pay less for inventory;
+- risk is spread over many makers instead of one vault;
+- makers can reuse their Tensor strategies and experience.
 
-**估值不变**：地板款的估值仍然是最高可成交买价。机器付出的买卖价差算作机器成本，在返还率锁定里计入。
+**Valuation is unchanged**: a floor item is still valued at the best executable bid. The spread a machine pays is a machine cost and is included in the return lock.
 
-### 4.2 特征买单：共享担保金 ＋ 抽中时圈定
+### 4.2 Trait bids: shared escrow + earmark on draw
 
-定价架构里，稀有款能不能进入盲抽，取决于有没有特征买单覆盖。模拟显示，早期稀有款只有 1.8% 能被覆盖，瓶颈是特征买单太少。
+In the pricing architecture, a rare item enters blind draws only if a trait bid covers it. Simulation shows only 1.8% of rare items are covered early on; the bottleneck is the shortage of trait bids.
 
-借鉴 Tensor 的共享担保金：
+Borrowing Tensor's shared escrow:
 
-1. 估价做市商存一笔余额，同时挂许多特征买单。每笔买单设单价和购买上限。
-2. 一个 NFT 被抽中时，用来给它估值的那笔买单，要从余额里**圈定**估值金额，锁定 72 小时，保证抽中者随时能卖给它。
-3. 72 小时后没被用掉，圈定自动释放。
-4. **只有余额足够支撑“已圈定金额 ＋ 这笔买单单价”时，这笔买单才能用来估值**。否则估值退到下一笔买单或地板价。
+1. An appraiser-maker deposits one balance and places many trait bids, each with a price and a purchase cap.
+2. When an NFT is drawn, the bid that valued it **earmarks** the value from the balance for 72 hours, so the winner can always sell into it.
+3. If unused after 72 hours, the earmark is released automatically.
+4. **A bid can value NFTs only if the balance covers "already earmarked + this bid's price"**; otherwise the valuation falls back to the next bid or the floor.
 
-**资金效率**：一笔余额只需覆盖同时处于 72 小时窗口内的圈定金额。假设一个系列每天抽出 10 个由某做市商定价的 NFT，平均估值 3 个地板价，那么最多需要圈定约 10 × 3 × 3 = 90 个地板价，就能同时给成百上千个特征挂买单。实际需要多少，还取决于抽中者卖回的比例。
+**Capital efficiency**: a balance only needs to cover earmarks inside the 72-hour window. If a collection draws 10 NFTs a day priced by one maker, averaging 3 floors each, the maker needs at most about 10 × 3 × 3 = 90 floors earmarked to keep bids on hundreds or thousands of traits. The real requirement also depends on how often winners sell back.
 
-**收入**：估价做市商拿两份钱：
-- 被抽中的 NFT 估值的 0.5% 定价费；
-- 抽中者卖回时，按自己的出价买到 NFT。只要出价低于真实价值，这就是低价进货。
+**Income**: appraiser-makers earn twice:
+- a 0.5% pricing fee on the value of each drawn NFT;
+- when winners sell back, they buy the NFT at their own bid. As long as the bid is below true value, that is cheap inventory.
 
-### 4.3 概率买单：每个 NFT 都能“抽”
+### 4.3 Odds buys: every NFT can be drawn
 
-定价架构里，定不了价的稀有款要走单品抽：卖足票数才开奖。问题是要等票卖完，冷门款可能永远卖不完。
+In the pricing architecture, rare items that cannot be priced go through single-item raffles that draw only when tickets sell out. Waiting for a sell-out is the problem: unpopular items may never sell out.
 
-借鉴 YOLO Buy，改为**概率买单**：
+Borrowing YOLO Buy, we switch to **odds buys**:
 
-- 任何挂出的 NFT（卖家给出卖价 A）都可以被买概率；
-- 买家付 q × A × (1 + 费率)，得到 q 的中奖概率，q 在 1%–50% 之间；
-- 用 VRF 开奖。中了，金库按 A 买下这个 NFT 交给买家；没中，钱进金库；
-- 卖家只要被抽中就拿到 A，外加 1.5% 奖励；
-- 金库的期望收益等于费率部分，承担的是波动。所以 A 不能超过“风险系数 × 金库储备”，沿用 v2 的水位规则。
+- any listed NFT (with the seller's ask A) can be bought as a probability;
+- the buyer pays q × A × (1 + fee) for probability q of winning, with q between 1% and 50%;
+- VRF decides. On a win, the vault buys the NFT at A for the buyer; on a loss, the money stays in the vault;
+- the seller receives A plus a 1.5% bonus whenever the NFT is won;
+- the vault's expected profit is the fee share and it carries the variance, so A may not exceed "risk factor × vault reserve", reusing v2's water-level rule.
 
-**为什么这里可以用卖家的报价 A**：盲抽里不能用卖家报价，因为玩家不挑具体哪个 NFT，高报的卖家没有代价。概率买单的买家看得到具体是哪个 NFT、卖多少钱，觉得贵就不买。卖家报高价，只会没人来买。这和单品抽的道理一样，但不用等票卖完，任何人在任何时候都能买任意大小的概率。
+**Why the seller's ask A is safe here**: blind draws cannot use seller quotes because players do not choose a specific NFT, so overpricing costs the seller nothing. In an odds buy, the buyer sees exactly which NFT and at what price, and simply does not buy if it is too expensive. An overpriced ask just attracts no buyers. The logic matches single-item raffles, but nobody waits for a sell-out: anyone can buy any amount of probability at any time.
 
-**对稀有款持有人**：以前要等几个月才可能遇到一个愿意全款买的人；现在 100 个人各买 1% 的概率，和一个人全款买的效果一样。**概率买单把一个稀有款的买家从“一个有钱人”扩大到“一群愿意花小钱赌一把的人”。**
+**For holders of rare items**: before, they might wait months for one buyer willing to pay in full; now 100 people each buying 1% have the same effect. **Odds buys widen a rare item's buyers from "one wealthy collector" to "a crowd willing to take a small bet".**
 
-### 4.4 做市收入只来自真实流水
+### 4.4 Market-making income only from real flow
 
-不发积分，不靠代币补贴。每一笔收入都能追溯到玩家付的钱：
+No points, no token subsidies. Every income stream traces back to what players pay:
 
-| 收入 | 来源 |
+| Income | Source |
 |---|---|
-| 地板做市方的价差 | 抽卡机器和卖回的不知情流量 |
-| 估价做市商的定价费 | 卖家结算溢价的一部分 |
-| 金库的庄家优势 | 盲抽返还率和概率买单的费率 |
-| 卖家的奖励 | 概率买单费率的一部分；盲抽结算溢价 |
+| Floor makers' spread | Uninformed flow from machines and sell-backs |
+| Appraiser-makers' pricing fees | Part of the seller settlement premium |
+| Vault house edge | Blind-draw return and odds-buy fees |
+| Seller bonuses | Part of odds-buy fees; blind-draw settlement premium |
 
-如果以后发代币，代币只用来分配已经产生的协议费，不用来买流动性。Blur 的教训是：积分换来的买单会在积分结束时一起撤走，还会诱发刷单。
+If a token ever launches, it only distributes protocol fees that already exist and never buys liquidity. Blur's lesson: bids bought with points leave together when the points end, and they invite wash trading.
 
-### 4.5 让系列项目方成为参与者
+### 4.5 Bring collection teams in as participants
 
-NFT 项目方最在意的是地板价和新买家。Podmatic 可以给项目方三种参与方式：
+NFT teams care most about their floor and about new buyers. Podmatic gives teams three ways in:
 
-- **地板和特征买单**：项目金库挂买单托底，同时成为估价做市商，赚定价费。
-- **赞助系列机器**：项目方开官方抽卡机器，拿主理人分成。抽卡玩家里会有一部分人第一次拥有这个系列的 NFT。
-- **版税**：概率买单和机器成交都是真实成交，照常支付版税。
+- **Floor and trait bids**: the team treasury backstops the floor with bids and becomes an appraiser-maker earning pricing fees.
+- **Sponsored collection machines**: the team runs an official draw machine and earns the creator fee. Some players will own an NFT from the collection for the first time.
+- **Royalties**: odds buys and machine sales are real sales and pay royalties as usual.
 
 ---
 
-## 5. 新增资金从哪里来、流向谁
+## 5. Where the new money comes from and where it goes
 
-**新增资金**有两部分，都是以前 NFT 市场没有的钱：
-- 抽卡玩家支付的娱乐成本，约为单抽价的 10%；
-- 概率买单的费率。
+**New money** has two sources, neither of which existed in the NFT market before:
+- the entertainment cost spinning players pay, about 10% of the spin price;
+- odds-buy fees.
 
-| 角色 | 以前 | 现在多赚的钱 | 来源 |
+| Role | Before | New income | Source |
 |---|---|---|---|
-| 地板款持有人 | 挂单等买家，或按集合买单折价卖 | 抽卡机器源源不断的买入 | 抽卡流量 |
-| 稀有款持有人 | 几个月等一个买家 | 概率买单把买家扩大成一群人；成交时多拿 1.5% | 概率买单 |
-| 地板做市方 | 主要和懂行的交易者对赌，一半时间跑输持有 | 不知情流量带来的稳定价差 | 抽卡流量 |
-| 估价做市商 | 没有这个角色 | 定价费 ＋ 低价接到卖回的 NFT | 结算溢价 |
-| 金库 LP | — | 盲抽庄家优势 ＋ 概率买单费率 | 玩家的娱乐成本 |
-| 主理人和项目方 | 项目方只收版税 | 机器流水分成；新持有人 | 抽卡流量 |
-| 玩家 | 买不起整个 NFT，或只能在地板附近交易 | 几美元到几十美元就能参与；返还率可兑现 | 支付娱乐成本 |
-| 协议 | — | 每笔 1.5% | 抽卡流量 |
+| Floor holders | List and wait, or sell at a discount to collection bids | Steady buying from machines | Gacha flow |
+| Rare holders | Wait months for one buyer | Odds buys turn buyers into a crowd; 1.5% extra on a sale | Odds buys |
+| Floor makers | Mostly trade against informed traders and trail holding half the time | Steady spread from uninformed flow | Gacha flow |
+| Appraiser-makers | Role did not exist | Pricing fees + cheap inventory from sell-backs | Settlement premium |
+| Vault LPs | — | Blind-draw house edge + odds-buy fees | Players' entertainment cost |
+| Creators and collection teams | Teams only earned royalties | Share of machine flow; new holders | Gacha flow |
+| Players | Could not afford a whole NFT, or could only trade near the floor | Join for a few to a few dozen dollars; redeemable returns | Pay the entertainment cost |
+| Protocol | — | 1.5% per trade | Gacha flow |
 
-**谁付钱，要说清楚**：玩家。盲抽的期望损失约为单抽价的 10%，概率买单的期望损失等于费率。这笔钱换来的是娱乐、以小博大的机会和可兑现的返还率。这是整个系统唯一的外部资金来源，所以必须在前端明确展示。
-
----
-
-## 6. 风险与开放问题
-
-1. **NFT 市场本身在萎缩**。我们的新增资金来自抽卡用户，前提是能把现有的链上抽卡用户（v1 引用的每月 2.3–3.2 亿美元消费）引到 NFT 上。这需要验证。
-2. **监管**。Tensor 的 YOLO Buy 本身就不对所有地区开放。概率买单和盲抽面临同样的博彩定性问题。
-3. **做市订单聚合的计算成本**。在 Solana 上，一次抽卡需要遍历多个做市订单找最优价，要控制在单笔交易的计算预算内。可能需要链下排序、链上校验。
-4. **圈定资金的上限**。共享担保金能放大多少倍、圈定窗口要多长，需要用真实的抽中和卖回数据校准。
-5. **概率买单的金库风险**。中奖概率上限 50% 是否合适？单个 NFT 的卖价上限设为储备的多少比例？
-6. **与 Tensor 的关系**。Tensor 的做市方和特征买单能否直接接入，例如读取 Tensor 的买单账户作为估值来源？这取决于对方程序是否允许跨程序调用。如果可以，我们就不需要从零建立买单市场。
+**Be clear about who pays**: players. The expected loss of a blind draw is about 10% of the spin price, and the expected loss of an odds buy equals its fee. In return they get entertainment, a shot at an outsized win and a redeemable return. This is the system's only outside source of money, so the web app must show it clearly.
 
 ---
 
-## 来源
+## 6. Risks and open questions
 
-- Tensor 官方文档：[价格曲线](https://docs.tensor.trade/provide-liquidity/advanced-concepts/bonding-curves.md)、[做市订单](https://docs.tensor.trade/trade/get-started-with-tensors-amm/market-make.md)、[共享担保金](https://docs.tensor.trade/trade/shared-escrow.md)、[费用与版税](https://docs.tensor.trade/trade/fees-and-royalties.md)、[YOLO Buy](https://docs.tensor.trade/trade/yolo-buy.md)、[无常损失](https://docs.tensor.trade/provide-liquidity/advanced-concepts/impermanent-loss.md)、[年化收益](https://docs.tensor.trade/provide-liquidity/what-apy-can-you-expect.md)、[风险](https://docs.tensor.trade/provide-liquidity/what-are-the-risks.md)、[为什么提供流动性](https://docs.tensor.trade/provide-liquidity/why-provide-liquidity.md)
-- Price Lock 与发展历程：[Alea Research, Tensor: Past, Present and Future（2024-02-06）](https://alearesearch.substack.com/p/tensor-past-present-and-future)
-- TNSR 发行：[The Block](https://www.theblock.co/post/287028/tensor-foundation-launches-governance-token-tnsr)；基金会收购市场的报道：[OneKey 博客](https://onekey.so/blog/ecosystem/tnsr-deep-dive-tokenomics-recent-developments-and-outlook)（转述 PANews 和 SolanaFloor，未找到 Tensor 官方原文）
-- Blur 买单池撤资：[The Defiant](https://thedefiant.io/news/nfts-and-web3/ethereum-nfts-crater-as-blur-incentives-wind-down)
+1. **The NFT market itself is shrinking.** Our new money comes from gacha players, which assumes we can bring existing on-chain gacha users (the $230–325M of monthly spend cited in v1) to NFTs. That needs validation.
+2. **Regulation.** Tensor's YOLO Buy is itself not available everywhere. Odds buys and blind draws face the same gambling classification question.
+3. **Cost of aggregating market-making orders.** A spin has to scan several market-making orders for the best price within one transaction's gas budget. This may need off-chain sorting with on-chain verification.
+4. **Earmark limits.** How far shared escrow can be levered and how long the earmark window should be need calibration against real draw and sell-back data.
+5. **Vault risk on odds buys.** Is a 50% cap on win probability right? What share of the reserve should cap a single NFT's ask?
+6. **Relationship with Tensor.** Can Tensor's makers and trait bids plug in directly, for example by reading Tensor bid accounts as a valuation source? That depends on whether their programs allow cross-program calls. If so, we would not need to build a bid market from scratch.
+
+---
+
+## Sources
+
+- Tensor docs: [bonding curves](https://docs.tensor.trade/provide-liquidity/advanced-concepts/bonding-curves.md), [market-making orders](https://docs.tensor.trade/trade/get-started-with-tensors-amm/market-make.md), [shared escrow](https://docs.tensor.trade/trade/shared-escrow.md), [fees and royalties](https://docs.tensor.trade/trade/fees-and-royalties.md), [YOLO Buy](https://docs.tensor.trade/trade/yolo-buy.md), [impermanent loss](https://docs.tensor.trade/provide-liquidity/advanced-concepts/impermanent-loss.md), [expected APY](https://docs.tensor.trade/provide-liquidity/what-apy-can-you-expect.md), [risks](https://docs.tensor.trade/provide-liquidity/what-are-the-risks.md), [why provide liquidity](https://docs.tensor.trade/provide-liquidity/why-provide-liquidity.md)
+- Price Lock and history: [Alea Research, Tensor: Past, Present and Future (2024-02-06)](https://alearesearch.substack.com/p/tensor-past-present-and-future)
+- TNSR launch: [The Block](https://www.theblock.co/post/287028/tensor-foundation-launches-governance-token-tnsr); reporting on the foundation acquiring the marketplace: [OneKey blog](https://onekey.so/blog/ecosystem/tnsr-deep-dive-tokenomics-recent-developments-and-outlook) (relaying PANews and SolanaFloor; no official Tensor source found)
+- Blur bid pool withdrawals: [The Defiant](https://thedefiant.io/news/nfts-and-web3/ethereum-nfts-crater-as-blur-incentives-wind-down)

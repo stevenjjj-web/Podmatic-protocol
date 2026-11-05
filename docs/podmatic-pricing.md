@@ -1,307 +1,311 @@
-# Podmatic 定价架构
+# Podmatic Pricing Architecture
 
-> 本文是 v2 设计（[`podmatic-v2-design.md`](podmatic-v2-design.md)）的定价层，取代 v2 的“卖家挂价 + 预言机上限”，也取代本文上一版的“型号池”。
+> This is the pricing layer of the v2 design ([`podmatic-v2-design.md`](podmatic-v2-design.md)). It replaces v2's "seller ask capped by an oracle" and the previous revision of this document ("model pools").
 >
-> 模拟：
-> - [`sim/premium_sim.py`](../sim/premium_sim.py)：系列 NFT 的四种定价方式对照，结果见 [`sim/premium_results.md`](../sim/premium_results.md)
-> - [`sim/pricing_sim.py`](../sim/pricing_sim.py)：可互换资产的价格曲线 vs 预言机挂价，结果见 [`sim/pricing_results.md`](../sim/pricing_results.md)
+> Simulations:
+> - [`sim/premium_sim.py`](../sim/premium_sim.py): four ways of pricing collection NFTs, results in [`sim/premium_results.md`](../sim/premium_results.md)
+> - [`sim/pricing_sim.py`](../sim/pricing_sim.py): price curve vs oracle-capped asks for interchangeable assets, results in [`sim/pricing_results.md`](../sim/pricing_results.md)
 
 ---
 
-## 0. 一页结论
+## 0. Summary
 
-### 上一版错在哪里
+### What the previous revision got wrong
 
-上一版把“同一型号可互换”当成了所有资产的前提。这只对评级卡这类同质资产成立。像 SMB 这样的 PFP 系列，每个 NFT 都是唯一的，不同特征的价格能差几倍到几十倍，不存在可以一起定价的“型号”。上一版的价格曲线只能用在其中可互换的那一部分。
+The previous revision assumed that items of the same "model" are interchangeable. That only holds for homogeneous assets like graded cards. In a PFP collection such as SMB, every NFT is unique and prices differ by several times to tens of times depending on traits. There is no "model" to price together. The previous price curve only works for the interchangeable part.
 
-### 重新梳理后的架构
+### The revised architecture
 
-一个 NFT 的价值拆成三部分，每部分用不同的方法定价：
+An NFT's value is split into three parts, each priced differently:
 
-| 价值部分 | 例子 | 是否可互换 | 定价方法 |
+| Part of value | Example | Interchangeable? | Pricing method |
 |---|---|---|---|
-| **地板** | 任何一个 SMB 都至少值地板价 | 可互换 | **地板池**：价格随池内库存变化，用套利钉住外部地板价 |
-| **特征溢价** | 所有带某个稀有特征的 SMB 共享的那部分溢价 | 半可互换：同特征的 NFT 有很多个 | **承诺买单**：有人把钱锁进合约，承诺按某个价格买入任何带这个特征的 NFT |
-| **个体溢价** | 独一无二的特征组合、1/1 | 不可互换 | **不进盲抽**：走透明单品抽，用荷兰式降价拍卖，由看得见这件 NFT 的买家来定价 |
+| **Floor** | Any SMB is worth at least the floor | Yes | **Floor pool**: price moves with pool inventory and is pinned to the outside floor by arbitrage |
+| **Trait premium** | The premium shared by all SMBs with a given rare trait | Partly: many NFTs share a trait | **Committed bids**: someone locks funds in a contract and commits to buy any NFT with that trait at a price |
+| **Individual premium** | A unique trait combination, a 1/1 | No | **Not in blind draws**: a transparent single-item raffle priced by a descending (Dutch) auction, so buyers who can see the NFT set the price |
 
-三条原则：
+Three principles:
 
-1. **估值只认可兑现的价格**：要么来自市场曲线，要么来自真金白银锁定的买单。不认卖家报价，也不认估值模型。
-2. **卖家只给底价，不给报价**：成交价由池子或买单决定，底价只决定卖不卖。
-3. **盲抽里只放能被可靠定价的东西**：定不了价的稀有品不混进盲抽，走透明单品抽。
+1. **Only redeemable prices count as value**: either a market curve or a bid backed by locked funds. Not seller quotes, not appraisal models.
+2. **Sellers give a floor, never a quote**: the pool or the bid sets the price; the floor only decides whether to sell.
+3. **Blind draws only contain what can be reliably priced**: rare items that cannot be priced go to transparent single-item raffles.
 
-一句话：
+In one line:
 
-> **Uniswap 让 LP 锁定的资金成为价格；Podmatic 让买家锁定的买单成为估值。**
+> **Uniswap turns the funds LPs lock into a price. Podmatic turns the bids buyers lock into a valuation.**
 
-### 模拟结果
+### Simulation results
 
-在一个按特征定价的系列上比较四种定价方式。稀有度分四层：近地板 70%、中档 22%、稀有 6%、极稀有 2%。
+Four pricing methods compared on a trait-priced collection. Rarity classes: near floor 70%, mid 22%, rare 6%, ultra rare 2%.
 
-| 方法 | 玩家实得 ÷ 展示估值 | 卖家到手 ÷ 真实价值 | 问题 |
+| Method | Player gets / displayed value | Seller take / true value | Problem |
 |---|---|---|---|
-| A. 估值预言机上限（行业常见） | **77.6%**（极稀有只有 61.7%） | 128.8% | 卖家专挑被模型高估的 NFT 挂进来，玩家买单 |
-| B. 只按地板价收 | 107.4% | 93.1% | 中档以上上架率为 0，机器里没有稀有品 |
-| C. 卖家自担保：抽中者可按挂价 90% 退回 | 约 86–90% | 约 113% | 退回率 73%；把退回罚金提到 30% 仍有约一半被退回 |
-| **D. 承诺买单估值** | **100.0%** | **99.4–99.9%** | 稀有品上架少，需要单品抽补充，并随买单市场成熟而改善 |
+| A. Oracle cap (common practice) | **77.6%** (ultra rare only 61.7%) | 128.8% | Sellers list exactly the NFTs the model overvalues; players pay for it |
+| B. Floor only | 107.4% | 93.1% | Nothing above near-floor lists; no rare prizes in machines |
+| C. Seller self-guarantee: winner may return at 90% of the ask | about 86–90% | about 113% | 73% of winners return the NFT; even a 30% return penalty leaves about half returned |
+| **D. Committed-bid valuation** | **100.0%** | **99.4–99.9%** | Few rare items list; single-item raffles fill the gap, and it improves as the bid market matures |
 
-C 是我们自己先想到、又被模拟否掉的方案，第 6 节解释原因。
-
----
-
-## 1. 为什么系列 NFT 难定价
-
-1. **每个都不一样**。同一个系列里，地板款和稀有特征款能差几十倍，不能用一个价格代表所有 NFT。
-2. **成交太稀疏**。地板款每天都有成交；稀有款可能几个月才成交一次，最近的成交价早就过时了。
-3. **卖家报价偏高**。卖家知道自己 NFT 的情况，也有动机报高价。
-4. **估值模型在稀有款上最不准**。特征估值模型（按稀有度排名、历史成交回归）在地板附近还算准，越稀有误差越大，而稀有款恰恰是抽卡机器的大奖。
-5. **只按地板价收，稀有品就进不来**。集合买单、地板池这类做法只认地板价，稀有款的持有人不会按地板价卖。
-
-抽卡机器把这些问题放大了：**抽卡的需求不挑具体哪一个 NFT**，所以任何一个 NFT 的价格都不会被买方的挑选所约束。只要协议给某个 NFT 的估值偏高，卖家就会把它挂进来，损失由玩家承担。这就是方法 A 让玩家只拿到展示价值 77.6% 的原因。
+C is a design we came up with ourselves and the simulation rejected; section 6 explains why.
 
 ---
 
-## 2. 架构总览
+## 1. Why collection NFTs are hard to price
+
+1. **Every item is different.** Floor items and rare-trait items in one collection can differ by tens of times; no single price represents them all.
+2. **Trades are sparse.** Floor items trade daily; a rare item may trade once in months, so its last sale is stale.
+3. **Sellers quote high.** Sellers know their NFT and have every reason to ask a lot.
+4. **Appraisal models are least accurate on rare items.** Trait models (rarity ranks, regressions on past sales) are decent near the floor and get worse as rarity rises, and rare items are exactly a draw machine's top prizes.
+5. **Buying only at the floor keeps rare items out.** Collection bids and floor pools only pay floor; holders of rare items will not sell at floor.
+
+Draw machines make all of this worse: **spin demand does not pick a specific NFT**, so no buyer's choice disciplines any single NFT's price. Whenever the protocol overvalues an NFT, sellers list it and players eat the loss. That is why method A leaves players with only 77.6% of the displayed value.
+
+---
+
+## 2. Architecture overview
 
 ```
-                    ┌───────────────────────────────────────────────┐
-  资产适配层         │  识别系列、读取特征（上链快照）、判断资产类别  │
-                    └───────────────────────────────────────────────┘
+                    ┌───────────────────────────────────────────────────┐
+  Asset adapters    │ identify collection, read traits (on-chain        │
+                    │ snapshot), classify the asset                     │
+                    └───────────────────────────────────────────────────┘
                                          │
         ┌────────────────────────────────┼────────────────────────────────┐
         ▼                                ▼                                ▼
-  ┌───────────┐                   ┌───────────┐                    ┌───────────┐
-  │  地板池    │                   │  买单簿    │                    │  单品抽    │
-  │ 可互换部分 │                   │ 特征溢价   │                    │ 个体溢价   │
-  │ 曲线＋套利 │                   │ 锁定资金的 │                    │ 荷兰式降价 │
-  │           │                   │ 集合/特征买单│                   │ 透明单件   │
-  └───────────┘                   └───────────┘                    └───────────┘
+  ┌──────────────┐                ┌──────────────┐                 ┌──────────────┐
+  │ Floor pool   │                │ Bid book     │                 │ Single-item  │
+  │ interchange- │                │ trait        │                 │ raffle       │
+  │ able part    │                │ premium      │                 │ individual   │
+  │ curve +      │                │ collection / │                 │ premium      │
+  │ arbitrage    │                │ trait bids   │                 │ Dutch auction│
+  └──────────────┘                └──────────────┘                 └──────────────┘
         │                                │                                │
         └───────────────┬────────────────┘                                │
                         ▼                                                 │
-              估值 V = max(地板池买入价, 覆盖它的最高有效特征买单)          │
+      Value V = max(floor pool bid, best eligible trait bid covering it)  │
                         │                                                 │
                         ▼                                                 ▼
-              ┌──────────────────┐                              ┌──────────────────┐
-  库存层       │ 底价单：V ≥ 底价才可抽 │                         │  单品抽：卖完开奖  │
-              └──────────────────┘                              └──────────────────┘
+              ┌──────────────────────┐                        ┌──────────────────────┐
+  Inventory   │ Floor orders: drawable│                       │ Raffle: draws when   │
+              │ when V >= floor       │                       │ tickets sell out     │
+              └──────────────────────┘                        └──────────────────────┘
                         │
                         ▼
-              ┌──────────────────┐
-  机器层       │ 盲抽：按 V 锁定返还率 │
-              └──────────────────┘
+              ┌──────────────────────┐
+  Machines    │ Blind draws: return  │
+              │ locked on V          │
+              └──────────────────────┘
 ```
 
 ---
 
-## 3. 模块详解
+## 3. Modules
 
-### 3.1 地板池：系列里可互换的那部分
+### 3.1 Floor pool: the interchangeable part of a collection
 
-> 后续修订：地板层改为开放给所有 Tensor 式做市订单，协议金库只是其中一个做市方。见 [`podmatic-liquidity.md`](podmatic-liquidity.md) 第 4.1 节。
+> Later revision: the floor layer is opened to any Tensor-style market-making order; the protocol vault is just one maker. See [`podmatic-liquidity.md`](podmatic-liquidity.md) section 4.1.
 
-**什么 NFT 算地板款**：除了集合地板买单，没有任何特征买单覆盖它的 NFT。对市场来说，这些 NFT 只值地板价，彼此可以互换。
+**What counts as a floor item**: an NFT that no trait bid covers, only the collection floor bid. To the market these NFTs are worth floor and are interchangeable.
 
-每个系列一个地板池，机制沿用上一版的价格曲线，只是对象从“型号”换成了“系列地板”：
+Each collection has a floor pool. It reuses the previous price curve, with the "model" replaced by the collection floor:
 
-| 事件 | 价格变化 |
+| Event | Price change |
 |---|---|
-| 一个 NFT 卖进池子 | P ← P × (1 − 2%) |
-| 一个 NFT 离开池子（被抽中、被直购） | P ← P × (1 + 2%) |
-| 池子没货 | 每天 P ← P × (1 + 1%) |
-| 库存超过目标 | 每天 P ← P × (1 − 0.5%) |
+| An NFT is sold into the pool | P ← P × (1 − 2%) |
+| An NFT leaves the pool (drawn or bought) | P ← P × (1 + 2%) |
+| The pool is empty | P ← P × (1 + 1%) per day |
+| Inventory above target | P ← P × (1 − 0.5%) per day |
 
-买入价 = P × (1 − 2%)，卖出价 = P × (1 + 2%)。系列地板在 Tensor、Magic Eden 上成交活跃，套利者会把池子价格推回外部地板价：池子偏贵，就从外部买地板款卖进来；池子偏便宜，就从池子直购拿到外部卖。
+Bid = P × (1 − 2%), ask = P × (1 + 2%). Collection floors trade actively on Tensor and Magic Eden, so arbitrageurs push the pool back to the outside floor: if the pool is expensive they buy floor items outside and sell them in; if it is cheap they buy from the pool and sell outside.
 
-`sim/pricing_sim.py` 验证了这个曲线：在预言机有 7 天滞后、约 10% 误差的条件下，曲线估值偏差中位为 3.5%，挂价 + 预言机上限的方式为 9.1%。评级卡的“型号”就是同质资产的地板池，同一套代码可以直接复用。
+`sim/pricing_sim.py` validates the curve: with an oracle that lags 7 days and errs by about 10%, the curve's median valuation error is 3.5% versus 9.1% for oracle-capped asks. A graded card "model" is simply a floor pool for a homogeneous asset, so the same code applies.
 
-**任何 NFT 都能按地板卖**：稀有款的持有人急用钱时，也可以按地板池买入价卖出。这是全系列的流动性底线。
+**Any NFT can be sold at floor**: a holder of a rare item who needs cash can sell at the floor pool bid. That is the liquidity floor for the whole collection.
 
-### 3.2 买单簿：特征溢价由锁定的资金定价
+### 3.2 Bid book: trait premiums priced by locked funds
 
-> 后续修订：特征买单可以使用共享担保金，NFT 被抽中时再圈定资金，以提高特征覆盖率。见 [`podmatic-liquidity.md`](podmatic-liquidity.md) 第 4.2 节。
+> Later revision: trait bids can use a shared escrow, with funds earmarked only when an NFT is drawn, to widen trait coverage. See [`podmatic-liquidity.md`](podmatic-liquidity.md) section 4.2.
 
-任何人都可以在合约里挂买单，把资金锁进去：
+Anyone can place a bid in the contract and lock funds behind it:
 
-| 买单类型 | 覆盖范围 | 能否用来估值 |
+| Bid type | Covers | Can it value NFTs? |
 |---|---|---|
-| 集合买单 | 系列内任何 NFT | 能，作为地板参考 |
-| 特征买单 | 带某个特征的任何 NFT，比如“戴王冠” | 能 |
-| 组合特征买单 | 同时带几个特征的任何 NFT | 能，前提是系列里至少有 5 个 NFT 符合 |
-| 单品买单 | 指定某一个 NFT | **不能**用来估值，只能直接成交 |
+| Collection bid | Any NFT in the collection | Yes, as the floor reference |
+| Trait bid | Any NFT with a given trait, e.g. "wears a crown" | Yes |
+| Trait-combination bid | Any NFT with several traits | Yes, if at least 5 NFTs in the collection match |
+| Single-item bid | One specific NFT | **No**, it can only trade |
 
-**为什么单品买单不能用来估值**：卖家可以开个小号，给自己的 NFT 挂一个高价单品买单，把估值抬上去。特征买单则不同，任何带这个特征的持有人都能按这个价格卖给它。想抬高估值的人，就得按高价买下市场上所有带这个特征的 NFT，代价很大。
+**Why single-item bids cannot value NFTs**: a seller could open a second wallet, bid high on their own NFT and inflate its valuation. A trait bid is different: any holder of that trait can sell into it at that price. Inflating a valuation means buying every NFT with that trait at the inflated price, which is expensive.
 
-**有效买单的条件**：
-- 已经挂满 24 小时；
-- 估值用这笔买单过去 3 天的最低价，防止临时拉高；
-- 资金全额锁在合约里，任何符合条件的 NFT 持有人都可以直接卖给它。
+**An eligible bid**:
+- has rested at least 24 hours;
+- values NFTs at its lowest price over the last 3 days, so it cannot be pumped briefly;
+- is fully funded in the contract, so any matching holder can sell into it directly.
 
-**谁来挂特征买单**：
+**Who places trait bids**:
 
-- **收藏者**：本来就想以某个价格收某类特征。
-- **金库**：金库可以把挂特征买单作为做市策略，买到的 NFT 再放回机器。
-- **估价做市商**：新角色。他们的买单决定了某个 NFT 的估值，这个 NFT 被抽中时，他们拿到估值的 0.5% 作为**定价费**。估价准确有钱赚，估高了就要按高价接盘。**估价从一项免费的、不用负责的服务，变成了一门要用资金担保、但有收入的生意。**
+- **Collectors** who already want a trait at some price.
+- **The vault**, as a market-making strategy, putting the NFTs it buys back into machines.
+- **Appraiser-makers**, a new role. When their bid sets the value of an NFT that gets drawn, they earn 0.5% of the value as a **pricing fee**. Accurate appraisals pay; overpricing means buying at that price. **Appraisal goes from a free, unaccountable service to a business backed by capital that earns money.**
 
-### 3.3 估值公式
+### 3.3 Valuation formula
 
 ```
-V = max(地板池买入价, 覆盖这个 NFT 的最高有效特征买单)
+V = max(floor pool bid, best eligible trait bid covering this NFT)
 ```
 
-- **返还率按 V 计算**。抽中者可以随时把 NFT 卖给定义 V 的那笔买单，所以展示的价值都能兑现。
-- **寄售人按 V × (1 + u) 结算**，默认 u = 3%。其中 0.5% 作为定价费付给估价做市商，余下 2.5% 归卖家。这是卖家把 NFT 放进机器、而不是直接卖给那笔买单的理由。
-- 被抽中的 NFT 从 V 对应的买单的“可成交数量”里扣掉，防止同一笔买单同时给多个 NFT 估值。
+- **The return is measured in V.** A winner can always sell the NFT to the bid that defines V, so every displayed value is redeemable.
+- **Consignors settle at V × (1 + u)**, with u = 3% by default. 0.5% of it is the pricing fee to the appraiser-maker and 2.5% goes to the seller. That is the reason to consign into a machine instead of selling straight to the bid.
+- A drawn NFT uses up one fill of the bid that defines its V, so one bid cannot value many NFTs at once.
 
-### 3.4 底价单：卖家只说最低多少
+### 3.4 Floor orders: sellers only say "not below"
 
-和上一版一致：持有人只给底价 F。只有 V × (1 + u) ≥ F 时，这个 NFT 才进入可抽区间。特征买单涨上来，NFT 自动进入区间；买单撤了，NFT 自动退出。卖家如实填写底价是最优策略，因为成交价由买单决定，底价只决定卖不卖。
+As in the previous revision, holders only give a floor F. An NFT becomes drawable only when V × (1 + u) ≥ F. When trait bids rise, the NFT enters range automatically; when bids are pulled, it leaves. Reporting the true floor is the seller's best strategy, because the bid sets the price and the floor only decides whether to sell.
 
-### 3.5 单品抽：定不了价的稀有品走透明拍卖
+### 3.5 Single-item raffles: transparent auctions for rare items that cannot be priced
 
-> 后续修订：借鉴 Tensor 的 YOLO Buy，增加“概率买单”作为稀有品的主要路径。买家按挂价的比例付钱，买到对应的中奖概率，由金库承担波动，不需要等票卖完。见 [`podmatic-liquidity.md`](podmatic-liquidity.md) 第 4.3 节。
+> Later revision: inspired by Tensor's YOLO Buy, "odds buys" become the main path for rare items. Buyers pay a share of the ask for the same chance to win, the vault carries the variance, and nobody waits for tickets to sell out. See [`podmatic-liquidity.md`](podmatic-liquidity.md) section 4.3.
 
-没有特征买单能覆盖到卖家底价的稀有品和 1/1，**不进盲抽**，而是单独开一个透明的单品抽：
+Rare items and 1/1s that no trait bid covers up to the seller's floor **do not go into blind draws**. They get a transparent single-item raffle:
 
-1. 页面展示这一个 NFT 的全部信息，买家知道自己在抽什么。
-2. 卖家设起始总价和保留价；总价按小时下降（荷兰式降价）。
-3. 第一张票被买下时，总价锁定，票数 = 总价 ÷ 票价，剩余的票按此出售。
-4. 票卖完时开奖；到期没卖完，全额退票，NFT 退还卖家。
-5. 降到保留价仍无人买，拍卖结束。
+1. The page shows everything about this one NFT, so buyers know what they are buying into.
+2. The seller sets a starting total and a reserve; the total drops every hour (Dutch auction).
+3. When the first ticket is bought, the total locks; ticket count = total ÷ ticket price, and the remaining tickets sell at that price.
+4. The raffle draws when tickets sell out; if they do not sell by the deadline, all tickets are refunded and the NFT returns to the seller.
+5. If the price reaches the reserve with no buyer, the auction ends.
 
-价格由第一个愿意出钱的买家决定，卖家的起始价再高也没有用。和盲抽不同，单品抽的买家是**知情的**：他们看得到具体是哪个 NFT，所以由他们来定价是可靠的。
+The first buyer willing to pay sets the price; a high starting price does not help the seller. Unlike blind draws, raffle buyers are **informed**: they see exactly which NFT it is, so their pricing is reliable.
 
-### 3.6 系列机器的设计
+### 3.6 Collection machines
 
-以一个 PFP 系列为例，地板价记为 F：
+For a PFP collection with floor price F:
 
-| 档位 | 构成 | 价值 |
+| Tier | Contents | Value |
 |---|---|---|
-| 地板档 | 地板池里的 NFT | 约 1 F |
-| 特征档 | 有特征买单覆盖、V 在 1.3–3 F 的 NFT | 1.3–3 F |
-| 稀有特征档 | 有特征买单覆盖、V 在 3 F 以上的 NFT | 3 F 以上 |
+| Floor tier | NFTs in the floor pool | about 1 F |
+| Trait tier | NFTs covered by trait bids with V of 1.3–3 F | 1.3–3 F |
+| Rare-trait tier | NFTs covered by trait bids with V above 3 F | above 3 F |
 
-- **按地板计价**：单抽价写成地板价的倍数（比如 1.6 F），每次抽取按地板池 TWAP 折算成 USDC。系列整体涨跌时，机器的经济结构不变。
-- **单抽价下限**：每个奖品都至少值一个地板价，所以在 89% 返还率下，单抽价必须高于地板价。比如 75% 地板档、20% 平均 2 F、5% 平均 5 F，期望约 1.4 F，单抽价约 1.6 F。
-- **低门槛**：地板价太高的系列，用 v1 的拼团抽把门槛拆小。
-- **概率**：沿用 v2 的返还率锁定，由合约按各档在区间内的库存和 V 逐抽求解。
+- **Floor-denominated pricing**: the spin price is a multiple of the floor (e.g. 1.6 F), converted to USDC at the floor pool TWAP on each spin. When the whole collection moves, the machine's economics do not change.
+- **Minimum spin price**: every prize is worth at least one floor, so at an 89% return the spin price must exceed the floor. For example 75% floor tier, 20% averaging 2 F and 5% averaging 5 F gives an expected value of about 1.4 F and a spin price of about 1.6 F.
+- **Low entry**: for collections with a high floor, v1's group spins split the cost.
+- **Odds**: v2's return lock; the contract solves the odds every spin from each tier's in-range inventory and V.
 
 ---
 
-## 4. Uniswap 对照（修订）
+## 4. Uniswap comparison (revised)
 
 | Uniswap | Podmatic |
 |---|---|
-| ERC-20 让代币可互换 | 只有地板部分可互换：系列地板池、评级卡型号池 |
-| 价格 = 池子库存的函数 | 地板价 = 地板池库存的函数 |
-| LP 锁定资金提供流动性，赚手续费 | 估价做市商锁定资金挂特征买单，赚定价费 |
-| 套利者把池价推回外部价格 | 套利者把地板池推回外部地板价；特征买单偏高会被持有人直接卖进去 |
-| 区间流动性（v3） | 底价单：估值进入区间才可抽 |
-| 噪音交易者为 LP 付费 | 抽卡玩家为做市方付费 |
+| ERC-20 makes tokens interchangeable | Only the floor part is interchangeable: collection floor pools, graded card model pools |
+| Price = a function of pool inventory | Floor price = a function of floor pool inventory |
+| LPs lock funds to provide liquidity and earn fees | Appraiser-makers lock funds in trait bids and earn pricing fees |
+| Arbitrageurs push the pool back to the outside price | Arbitrageurs push the floor pool back to the outside floor; holders sell straight into overpriced trait bids |
+| Concentrated liquidity (v3) | Floor orders: drawable only when the value is in range |
+| Noise traders pay LPs | Spinning players pay market makers |
 
 ---
 
-## 5. 模拟结果详解
+## 5. Simulation results in detail
 
-`sim/premium_sim.py`，20 万个候选持有人。完整表格见 `sim/premium_results.md`。
+`sim/premium_sim.py`, 200,000 candidate holders. Full tables in `sim/premium_results.md`.
 
-**A. 估值预言机上限**。卖家只在模型估值高于自己心理价位时才挂。模型高估的 NFT 都进来了，低估的都没进来。结果是玩家实得只有展示估值的 77.6%，极稀有只有 61.7%；卖家到手是真实价值的 128.8%。**越稀有，问题越严重。**
+**A. Oracle cap.** Sellers list only when the model values their NFT above their reservation price. Every NFT the model overvalues comes in; every one it undervalues stays out. Players get only 77.6% of the displayed value (ultra rare: 61.7%) and sellers receive 128.8% of true value. **The rarer the item, the worse it gets.**
 
-**B. 只按地板价收**。只有 5.5% 的近地板款持有人愿意卖，中档以上上架率为 0。价格很安全，但机器里没有大奖。
+**B. Floor only.** Only 5.5% of near-floor holders sell, and nothing above near floor lists. Prices are safe, but machines have no top prizes.
 
-**C. 卖家自担保**（第 6 节）。退回率 73%。
+**C. Seller self-guarantee** (section 6). 73% of winners return the NFT.
 
-**D. 承诺买单估值**：
+**D. Committed-bid valuation**:
 
-| 稀有度 | 上架率：早期 → 成熟买单市场 | 卖家到手 ÷ 真实价值：早期 → 成熟 | 玩家实得 ÷ 展示估值 |
+| Rarity | Listing rate: early → mature bid market | Seller take / true value: early → mature | Player gets / displayed value |
 |---|---|---|---|
-| 近地板 | 34.1% → 34.1% | 100.9% → 100.9% | 100.0% |
-| 中档 | 7.4% → 18.1% | 93.6% → 97.1% | 100.0–101.1% |
-| 稀有 | 1.8% → 8.6% | 88.9% → 93.8% | 100.0–100.3% |
-| 极稀有 | 0.1% → 2.0% | 85.3% → 90.9% | 100.0% |
+| Near floor | 34.1% → 34.1% | 100.9% → 100.9% | 100.0% |
+| Mid | 7.4% → 18.1% | 93.6% → 97.1% | 100.0–101.1% |
+| Rare | 1.8% → 8.6% | 88.9% → 93.8% | 100.0–100.3% |
+| Ultra rare | 0.1% → 2.0% | 85.3% → 90.9% | 100.0% |
 
-“早期”假设特征买单覆盖 90% / 70% / 40% 的中档、稀有、极稀有 NFT，出价为真实价值的 80–95% / 70–90% / 55–85%。“成熟”假设覆盖 97% / 90% / 70%，出价 88–98% / 82–95% / 70–92%。
+"Early" assumes trait bids cover 90% / 70% / 40% of mid, rare and ultra-rare NFTs at 80–95% / 70–90% / 55–85% of true value. "Mature" assumes coverage of 97% / 90% / 70% at 88–98% / 82–95% / 70–92%.
 
-怎么读：
+How to read it:
 
-1. **玩家永远拿到展示的价值**，因为估值本身就是可执行的买单。
-2. **稀有品的上架率取决于买单市场的深度**。买单越多、越接近真实价值，能进机器的稀有品越多。定价费就是用来养这个市场的。
-3. **早期稀有品主要靠单品抽**。这不是缺陷，而是诚实的结果：没有人愿意用钱担保的价格，就不应该被当成盲抽的估值。
+1. **Players always get the displayed value**, because the valuation is itself an executable bid.
+2. **Rare listing rates depend on the depth of the bid market.** More bids, closer to true value, let more rare items into machines. Pricing fees exist to grow that market.
+3. **Early on, rare items mostly go through single-item raffles.** That is not a flaw but an honest outcome: a price nobody will back with money should not be a blind-draw valuation.
 
-模型的局限：心理底价、买单出价、变现折扣都是假设的分布；没有模拟时间维度上的买单变化和套利；特征买单的覆盖率需要用真实系列的数据校准。
+Model limits: reservation prices, bid levels and liquidity discounts are assumed distributions; bids and arbitrage do not evolve over time; trait-bid coverage needs calibration against real collections.
 
 ---
 
-## 6. 为什么不用“卖家自担保”
+## 6. Why not "seller self-guarantee"
 
-这是我们最先想到的方案：卖家自己报价；抽中者觉得报高了，可以在 72 小时内按挂价的 90% 退回；退回时成交作废，卖家付罚金。看起来“谁定价谁负责”，很合理。
+This was our first idea: sellers quote their own price; a winner who thinks it is too high may return the NFT within 72 hours for 90% of the ask; a return voids the sale and the seller pays a penalty. "Whoever sets the price is accountable" sounds right.
 
-模拟否定了它：
+The simulation rejected it:
 
-| 退回罚金 | 退回率 | 上架率 | 玩家实得 ÷ 展示估值 |
+| Return penalty | Return rate | Listing rate | Player gets / displayed value |
 |---|---|---|---|
 | 3% | 66–73% | 59–76% | 79–86% |
 | 10% | 56–63% | 24–42% | 81–88% |
 | 20% | 48–55% | 11–23% | 84–90% |
 | 30% | 43–50% | 6–14% | 85–91% |
 
-原因有三个：
+Three reasons:
 
-1. **卖家拿退回当免费期权**。罚金低时，卖家宁可高报碰运气：被保留就赚到，被退回只亏一点罚金。
-2. **退回是随机的**。卖家和抽中者对价值的判断都有误差，诚实的报价也会被大量退回。
-3. **稀有品的退回主要因为流动性**。稀有 NFT 难卖，抽中者宁可要 90% 的现金，所以诚实定价的稀有品也会被退回。
+1. **Sellers treat returns as a free option.** With a low penalty, overpricing is a cheap bet: if kept, the seller wins; if returned, they lose only the penalty.
+2. **Returns are random.** Sellers and winners both misjudge value, so honest quotes get returned a lot too.
+3. **Rare items get returned for liquidity.** Rare NFTs are hard to sell, so winners prefer 90% in cash, and honestly priced rare items come back as well.
 
-罚金提高能减少高报，但退回率仍在 40% 以上，上架率却暴跌。这说明问题不在参数，而在于让卖家给自己的 NFT 定价。估值必须来自卖家以外、并且愿意出钱的人。
+A higher penalty reduces overpricing, but return rates stay above 40% while listing rates collapse. The problem is not the parameters; it is letting sellers price their own NFTs. Value has to come from someone other than the seller who is willing to put money behind it.
 
 ---
 
-## 7. 对之前版本的修订
+## 7. Changes from earlier revisions
 
-| 项 | v2 | 上一版（型号池） | 本版 |
+| Item | v2 | Previous revision (model pools) | This revision |
 |---|---|---|---|
-| 资产假设 | 实物卡，参考价已知 | 同型号可互换 | 系列 NFT 每个不同；只有地板部分可互换 |
-| 估值来源 | 外部预言机 | 型号池曲线 | 地板池曲线 ＋ 特征买单 |
-| 卖家给什么 | 挂价 | 底价 | 底价 |
-| 卖家结算 | 挂价 | 型号池 TWAP | V × (1 + 3%) |
-| 稀有品 | 混在机器里，按预言机估值 | 未处理 | 有买单覆盖才进盲抽，否则走单品抽 |
-| 新角色 | — | — | 估价做市商，赚定价费 |
-| 玩家卖回 | 固定 88% | 型号池买入价 | 卖给定义估值的那笔买单，或卖进地板池 |
+| Asset assumption | Physical cards with a known reference price | Items of one model are interchangeable | Every collection NFT is different; only the floor part is interchangeable |
+| Source of value | External oracle | Model pool curve | Floor pool curve + trait bids |
+| What sellers give | An ask | A floor | A floor |
+| Seller settlement | The ask | Model pool TWAP | V × (1 + 3%) |
+| Rare items | Mixed into machines at oracle value | Not addressed | Blind draws only when a bid covers them; otherwise single-item raffles |
+| New role | — | — | Appraiser-makers earning pricing fees |
+| Player sell-back | Fixed 88% | Model pool bid | Sell to the bid that defines the value, or into the floor pool |
 
 ---
 
-## 8. 链上实现
+## 8. On-chain implementation
 
-**账户**
+**Accounts**
 
-| 账户 | 内容 |
+| Account | Contents |
 |---|---|
-| CollectionRegistry | 系列、验证过的创作者地址、特征快照的默克尔根 |
-| TraitProof | 某个 NFT 的特征证明（对快照默克尔根的证明），首次挂单时提交 |
-| FloorPool | 系列地板池：价格 P、TWAP 累加器、库存、价格刻度 |
-| Bid | 买单：类型（集合/特征/组合特征/单品）、特征条件、单价、剩余数量、锁定资金、创建时间、3 日最低价记录 |
-| BidIndex | 每个特征的最高有效买单索引，用于快速估值 |
-| FloorOrder | 底价单：NFT、底价、所有人、当前估值所用的买单 |
-| SingleRaffle | 单品抽：NFT、起始总价、保留价、降价速度、锁定价、已售票数、截止时间 |
+| CollectionRegistry | Collection, verified creator address, Merkle root of the trait snapshot |
+| TraitProof | Trait proof for an NFT (against the snapshot root), submitted on first listing |
+| FloorPool | Collection floor pool: price P, TWAP accumulator, inventory, price ticks |
+| Bid | Type (collection / trait / trait combination / single item), trait condition, price, remaining fills, locked funds, creation time, 3-day minimum price record |
+| BidIndex | Best eligible bid per trait, for fast valuation |
+| FloorOrder | Floor order: NFT, floor, owner, the bid currently used for its value |
+| SingleRaffle | Single-item raffle: NFT, starting total, reserve, decay rate, locked price, tickets sold, deadline |
 
-**特征必须上链快照**。很多系列的元数据可以修改，特征如果直接读当前元数据，可能被改。协议在注册系列时对全部特征做一次快照，存默克尔根；挂单时提交证明。
+**Traits must be snapshotted on chain.** Many collections have mutable metadata, so reading current metadata would let traits change. The protocol snapshots all traits when a collection is registered, stores the Merkle root, and listings submit proofs.
 
-**指令**
+**Instructions**
 
-- `register_collection`、`snapshot_traits`：注册系列，写入特征快照。
-- `place_bid`、`cancel_bid`、`fill_bid`：挂买单、撤单、把 NFT 卖给买单。
-- `place_floor`、`cancel_floor`：挂底价单、撤单。
-- `refresh_valuation`：任何人都可以调用，按当前有效买单重算某个 NFT 的估值和区间状态。
-- `sell_to_floor_pool`、`buy_from_floor_pool`：地板池买卖。
-- `create_single_raffle`、`buy_tickets`、`settle_single_raffle`、`refund_single_raffle`：单品抽。
-- `fulfill_spin`：按档位内在区间的 NFT 和 V 锁定返还率；抽中后结算卖家 V × (1 + u)、支付定价费、扣减对应买单的可成交数量。
+- `register_collection`, `snapshot_traits`: register a collection and write its trait snapshot.
+- `place_bid`, `cancel_bid`, `fill_bid`: place a bid, cancel it, sell an NFT into it.
+- `place_floor`, `cancel_floor`: place or cancel a floor order.
+- `refresh_valuation`: anyone may call; recomputes an NFT's value and range status from current eligible bids.
+- `sell_to_floor_pool`, `buy_from_floor_pool`: floor pool trades.
+- `create_single_raffle`, `buy_tickets`, `settle_single_raffle`, `refund_single_raffle`: single-item raffles.
+- `fulfill_spin`: locks the return on in-range NFTs and V per tier; on a win, settles V × (1 + u) to the seller, pays the pricing fee and uses up a fill of the bid.
 
 ---
 
-## 9. 开放问题
+## 9. Open questions
 
-1. **特征买单的初始深度**：早期谁来挂？金库要拿多少资金做特征买单？定价费 0.5% 够不够吸引专业做市商？
-2. **组合特征买单的最低覆盖数**：要求 5 个够不够防止自买自估？是否需要按系列规模调整？
-3. **外部买单能否计入**：Tensor 等市场已有特征买单，能否在链上直接读取并作为估值来源？这取决于对方程序是否允许跨程序成交。
-4. **单抽价下限**：所有奖品都 ≥ 地板价，导致系列机器的单抽价高于地板价。对地板价高的系列，拼团抽和单品抽是否足够降低门槛？
-5. **定价费由谁出**：目前从结算溢价 u 中切出。是否应该改为从协议费中出，以免降低卖家收入？
-6. **单品抽的合规定性**：单品抽更接近彩票，需要单独的法律意见。
+1. **Initial trait-bid depth**: who bids early? How much capital should the vault commit to trait bids? Is a 0.5% pricing fee enough to attract professional makers?
+2. **Minimum coverage for trait-combination bids**: is 5 matching NFTs enough to stop self-appraisal? Should it scale with collection size?
+3. **Counting outside bids**: Tensor and others already host trait bids. Can they be read on chain and used for valuation? That depends on whether their programs allow cross-program fills.
+4. **Minimum spin price**: every prize is worth at least the floor, so collection machines cost more than the floor per spin. For high-floor collections, are group spins and single-item raffles enough to lower the entry?
+5. **Who pays the pricing fee**: it currently comes out of the settlement premium u. Should it come from protocol fees instead, so sellers keep more?
+6. **Legal status of single-item raffles**: they are closer to lotteries and need their own legal opinion.

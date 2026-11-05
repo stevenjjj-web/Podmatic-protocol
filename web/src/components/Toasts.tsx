@@ -38,7 +38,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
               {t.body && <div className="toast-body">{t.body}</div>}
               {t.href && (
                 <a className="toast-link" href={t.href} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>
-                  在浏览器中查看 ↗
+                  View on explorer ↗
                 </a>
               )}
             </div>

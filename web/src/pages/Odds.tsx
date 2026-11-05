@@ -30,14 +30,14 @@ function OddsCard({ l, maxAsk, onResult }: { l: OddsListing; maxAsk?: bigint; on
   async function buy() {
     if (!deployment || !client) return;
     if (!(await ensureToken(deployment.quote, deployment.odds, total))) return;
-    const r = await run(`买 ${q}% 概率 · $${fmtUsdc(total)}`, (w) =>
+    const r = await run(`Buy ${q}% odds · $${fmtUsdc(total)}`, (w) =>
       w({ address: deployment.odds, abi: oddsAbi, functionName: "buyOdds", args: [BigInt(l.id), q * 100, zeroAddress] }),
     );
     if (!r) return;
     const [req] = parseEventLogs({ abi: oddsAbi, logs: r.logs, eventName: "OddsRequested" });
     let logs = r.logs;
     if (deployment.randomnessKind === "mock") {
-      const r2 = await run("开奖（本地模拟 VRF 回调）", (w) =>
+      const r2 = await run("Reveal (local mock VRF callback)", (w) =>
         w({ address: deployment.randomness, abi: mockRandomnessAbi, functionName: "fulfill", args: [req.args.requestId] }),
       );
       if (!r2) return;
@@ -58,22 +58,22 @@ function OddsCard({ l, maxAsk, onResult }: { l: OddsListing; maxAsk?: bigint; on
       <NftArt tokenId={l.tokenId} traits={tokenTraits(collection, l.tokenId)} size="100%" rounded={14} />
       <div className="between">
         <div style={{ fontWeight: 535 }}>{collection?.name} #{Number(l.tokenId)}</div>
-        {l.pending && <span className="badge badge-warn">开奖中</span>}
+        {l.pending && <span className="badge badge-warn">Revealing</span>}
       </div>
       <TraitList tokenId={l.tokenId} />
       <div className="grid grid-2" style={{ gap: 8 }}>
-        <Stat label="卖家要价" value={`$${fmtUsdc(l.ask, 0)}`} />
-        <Stat label="最高特征买单" value={fill ? `$${fmtUsdc(fill.price, 0)}` : "—"} />
+        <Stat label="Seller ask" value={`$${fmtUsdc(l.ask, 0)}`} />
+        <Stat label="Best trait bid" value={fill ? `$${fmtUsdc(fill.price, 0)}` : "—"} />
       </div>
       <div className="panel stack-sm">
-        <div className="between"><span className="field-label">中奖概率</span><span className="mono" style={{ fontWeight: 600 }}>{q}%</span></div>
+        <div className="between"><span className="field-label">Win chance</span><span className="mono" style={{ fontWeight: 600 }}>{q}%</span></div>
         <input type="range" min={1} max={50} value={q} onChange={(e) => setQ(Number(e.target.value))} />
-        <div className="between small muted"><span>花费</span><span className="mono">${fmtUsdc(total)}</span></div>
+        <div className="between small muted"><span>Cost</span><span className="mono">${fmtUsdc(total)}</span></div>
       </div>
       <button className="btn btn-primary" disabled={!address || busy || l.pending || tooBig} onClick={buy}>
-        {tooBig ? "金库容量不足" : `试试手气 · ${q}%`}
+        {tooBig ? "Vault too small" : `Try your luck · ${q}%`}
       </button>
-      <div className="small faint">卖家 {short(l.seller)} · 抽中时卖家拿到要价 + 1.5%</div>
+      <div className="small faint">Seller {short(l.seller)} · on a win the seller gets the ask + 1.5%</div>
     </div>
   );
 }
@@ -87,23 +87,23 @@ export function OddsPage() {
     <div className="stack" style={{ gap: 20 }}>
       <div className="between wrap">
         <div>
-          <h1 className="h2">概率买</h1>
-          <div className="muted">给定不了价的稀有款用。花要价的 1%–50%，买到同等的中奖概率；看得见具体是哪一件，觉得贵就不买。</div>
+          <h1 className="h2">Odds</h1>
+          <div className="muted">For rare NFTs no bid can price. Pay 1–50% of the ask for the same chance to win it. You see exactly which NFT it is, so if the ask is too high, just do not buy.</div>
         </div>
         <div className="card row" style={{ gap: 24, padding: "12px 20px" }}>
-          <Stat label="金库" value={`$${fmtUsdc(totalAssets, 0)}`} />
-          <Stat label="单件要价上限" value={`$${fmtUsdc(maxAsk, 0)}`} />
-          <Stat label="费率" value={fmtPct(Number(FEE_BPS) / 1e4, 0)} />
+          <Stat label="Vault" value={`$${fmtUsdc(totalAssets, 0)}`} />
+          <Stat label="Max ask per NFT" value={`$${fmtUsdc(maxAsk, 0)}`} />
+          <Stat label="Fee" value={fmtPct(Number(FEE_BPS) / 1e4, 0)} />
         </div>
       </div>
       {active.length === 0 ? (
-        <div className="card"><Empty>还没有挂出的 NFT。可以在“挂卡”页选择“概率出售”。</Empty></div>
+        <div className="card"><Empty>No NFTs listed yet. List one from the Sell page with "Sell by odds".</Empty></div>
       ) : (
         <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))" }}>
           {active.map((l) => <OddsCard key={l.id} l={l} maxAsk={maxAsk} onResult={(won, x) => setResult({ won, l: x })} />)}
         </div>
       )}
-      <Modal open={!!result} onClose={() => setResult(null)} title={result?.won ? "中了！" : "这次没中"}>
+      <Modal open={!!result} onClose={() => setResult(null)} title={result?.won ? "You won!" : "Not this time"}>
         {result && (
           <div className="stack">
             <div className={result.won ? "reveal-art" : ""} style={{ opacity: result.won ? 1 : 0.4, filter: result.won ? undefined : "grayscale(1)" }}>
@@ -111,10 +111,10 @@ export function OddsPage() {
             </div>
             <div className="muted">
               {result.won
-                ? `${collection?.name} #${Number(result.l.tokenId)} 已经转到你的钱包。`
-                : "这件 NFT 还在挂着，可以再试一次。"}
+                ? `${collection?.name} #${Number(result.l.tokenId)} is now in your wallet.`
+                : "This NFT is still listed. You can try again."}
             </div>
-            <button className="btn btn-primary btn-lg" onClick={() => setResult(null)}>好的</button>
+            <button className="btn btn-primary btn-lg" onClick={() => setResult(null)}>OK</button>
           </div>
         )}
       </Modal>

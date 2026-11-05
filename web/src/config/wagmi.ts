@@ -19,7 +19,7 @@ const LOCAL_WALLET_KEY = "podmatic.localWallet";
 
 const localDevWallet = (): Wallet => ({
   id: "podmatic-local-dev",
-  name: "本地测试钱包",
+  name: "Local dev wallet",
   iconUrl: "/favicon.svg",
   iconBackground: "#FF37C7",
   createConnector: (details) =>
@@ -53,7 +53,7 @@ const wallets = [
   ...(projectId ? [metaMaskWallet, walletConnectWallet] : []),
 ];
 
-const connectors = connectorsForWallets([{ groupName: "钱包", wallets }], {
+const connectors = connectorsForWallets([{ groupName: "Wallets", wallets }], {
   appName: "Podmatic",
   projectId: projectId || "podmatic-no-walletconnect",
 });

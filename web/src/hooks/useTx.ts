@@ -27,15 +27,15 @@ export function useTx() {
 
   const run = useCallback(
     async (title: string, send: (write: typeof writeContractAsync) => Promise<Hash>): Promise<TransactionReceipt | undefined> => {
-      const id = toasts.push({ title, body: "请在钱包中确认", kind: "pending" });
+      const id = toasts.push({ title, body: "Confirm in your wallet", kind: "pending" });
       setBusy(true);
       try {
         const hash = await send(writeContractAsync);
         const explorer = chainMeta[chainId]?.explorer;
-        toasts.update(id, { body: "等待上链…", href: explorer ? `${explorer}/tx/${hash}` : undefined });
+        toasts.update(id, { body: "Waiting for confirmation…", href: explorer ? `${explorer}/tx/${hash}` : undefined });
         const receipt = await client!.waitForTransactionReceipt({ hash });
-        if (receipt.status !== "success") throw new Error("交易失败");
-        toasts.update(id, { kind: "success", body: "已确认" });
+        if (receipt.status !== "success") throw new Error("Transaction failed");
+        toasts.update(id, { kind: "success", body: "Confirmed" });
         await queryClient.invalidateQueries();
         return receipt;
       } catch (e) {

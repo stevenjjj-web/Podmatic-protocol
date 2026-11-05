@@ -201,11 +201,11 @@ async function seedLocal(d: Deployment, demo: DemoCollection) {
     bands.map(([lo, hi], i) => ({ minValue: usdc(lo), maxValue: usdc(hi), baseProbBps: probs[i] }));
   await factory.connect(maker).createMachine({
     nft: nftAddr, spinPrice: usdc(50), targetRtpBps: 8900, creatorFeeBps: 250, riskBps: 2500, pityThreshold: 40,
-    tiers: tiers(standard), name: "Pod Apes · 标准机",
+    tiers: tiers(standard), name: "Pod Apes · Standard",
   });
   await factory.connect(maker).createMachine({
     nft: nftAddr, spinPrice: usdc(50), targetRtpBps: 8800, creatorFeeBps: 250, riskBps: 2500, pityThreshold: 40,
-    tiers: tiers(chase), name: "Pod Apes · 追梦机",
+    tiers: tiers(chase), name: "Pod Apes · Chase",
   });
   const [m1Addr, m2Addr] = await factory.allMachines();
   const machines = [await ethers.getContractAt("Machine", m1Addr), await ethers.getContractAt("Machine", m2Addr)];

@@ -13,10 +13,10 @@ import { COLLECTION_TRAIT, traitLabel } from "../lib/traits";
 const MIN_TRAIT_HOLDERS = 5;
 
 function status(b: Bid) {
-  if (!b.active) return <span className="badge">已撤</span>;
-  if (b.remaining === 0) return <span className="badge">已满</span>;
-  if (b.eligible) return <span className="badge badge-ok">可估值</span>;
-  return <span className="badge badge-warn">挂满 24h 前或资金不足</span>;
+  if (!b.active) return <span className="badge">Cancelled</span>;
+  if (b.remaining === 0) return <span className="badge">Filled</span>;
+  if (b.eligible) return <span className="badge badge-ok">Can value</span>;
+  return <span className="badge badge-warn">Under 24h or underfunded</span>;
 }
 
 function Escrow() {
@@ -41,9 +41,9 @@ function Escrow() {
     if (!deployment || value === 0n) return;
     if (mode === "deposit") {
       if (!(await ensureToken(deployment.quote, deployment.bidBook, value))) return;
-      await run(`存入担保金 $${fmtUsdc(value)}`, (w) => w({ address: deployment.bidBook, abi: bidBookAbi, functionName: "deposit", args: [value] }));
+      await run(`Deposit $${fmtUsdc(value)} to escrow`, (w) => w({ address: deployment.bidBook, abi: bidBookAbi, functionName: "deposit", args: [value] }));
     } else {
-      await run(`取出担保金 $${fmtUsdc(value)}`, (w) => w({ address: deployment.bidBook, abi: bidBookAbi, functionName: "withdraw", args: [value] }));
+      await run(`Withdraw $${fmtUsdc(value)} from escrow`, (w) => w({ address: deployment.bidBook, abi: bidBookAbi, functionName: "withdraw", args: [value] }));
     }
     setAmount("");
   }
@@ -52,21 +52,21 @@ function Escrow() {
     <div className="card swap-card stack">
       <div className="between">
         <div className="tabs">
-          <button className={`tab ${mode === "deposit" ? "active" : ""}`} onClick={() => setMode("deposit")}>存入</button>
-          <button className={`tab ${mode === "withdraw" ? "active" : ""}`} onClick={() => setMode("withdraw")}>取出</button>
+          <button className={`tab ${mode === "deposit" ? "active" : ""}`} onClick={() => setMode("deposit")}>Deposit</button>
+          <button className={`tab ${mode === "withdraw" ? "active" : ""}`} onClick={() => setMode("withdraw")}>Withdraw</button>
         </div>
-        <span className="small muted">共享担保金</span>
+        <span className="small muted">Shared escrow</span>
       </div>
       <div className="grid grid-3" style={{ gap: 8 }}>
-        <Stat label="余额" value={`$${fmtUsdc(balance, 0)}`} />
-        <Stat label="已圈定" value={`$${fmtUsdc(earmarked, 0)}`} hint="抽中者 3 天退出窗口" />
-        <Stat label="可用" value={`$${fmtUsdc(balance - earmarked, 0)}`} />
+        <Stat label="Balance" value={`$${fmtUsdc(balance, 0)}`} />
+        <Stat label="Earmarked" value={`$${fmtUsdc(earmarked, 0)}`} hint="Winners' 3-day exit window" />
+        <Stat label="Available" value={`$${fmtUsdc(balance - earmarked, 0)}`} />
       </div>
-      <AmountPanel label={mode === "deposit" ? "存入金额" : "取出金额"} value={amount} onChange={setAmount} />
+      <AmountPanel label={mode === "deposit" ? "Deposit amount" : "Withdraw amount"} value={amount} onChange={setAmount} />
       <button className="btn btn-primary btn-lg" disabled={!address || busy || value === 0n} onClick={submit}>
-        {mode === "deposit" ? "存入" : "取出"}
+        {mode === "deposit" ? "Deposit" : "Withdraw"}
       </button>
-      <div className="small faint">一笔余额同时支撑你所有的买单；某笔买单的单价超过可用余额时，它暂时失效。</div>
+      <div className="small faint">One balance backs all your bids. A bid whose price exceeds your available balance is inactive until you top up.</div>
     </div>
   );
 }
@@ -90,39 +90,39 @@ function PlaceBid() {
   const p = parseUsdc(price);
   return (
     <div className="card card-pad stack">
-      <div className="h3">挂一笔买单</div>
+      <div className="h3">Place a bid</div>
       <div className="stack-sm">
-        <div className="field-label">买什么</div>
+        <div className="field-label">What to buy</div>
         <select className="select" value={trait} onChange={(e) => setTrait(e.target.value as Hex)}>
-          <option value={COLLECTION_TRAIT}>全系列任意一个（地板买单）</option>
+          <option value={COLLECTION_TRAIT}>Any token in the collection (floor bid)</option>
           {options.map(([key, count]) => (
-            <option key={key} value={key}>{traitLabel(collection, key as Hex)}（{count} 个持有）</option>
+            <option key={key} value={key}>{traitLabel(collection, key as Hex)} ({count} holders)</option>
           ))}
         </select>
       </div>
       <div className="grid grid-2">
         <div className="stack-sm">
-          <div className="field-label">单价 (USDC)</div>
+          <div className="field-label">Price (USDC)</div>
           <input className="input mono" value={price} onChange={(e) => setPrice(e.target.value.replace(/[^0-9.]/g, ""))} placeholder="0" />
         </div>
         <div className="stack-sm">
-          <div className="field-label">最多买几个</div>
+          <div className="field-label">Max fills</div>
           <input className="input mono" value={fills} onChange={(e) => setFills(e.target.value.replace(/[^0-9]/g, ""))} />
         </div>
       </div>
       <div className="notice notice-neutral">
-        买单挂满 24 小时、余额足够时，才会被用来给机器里的 NFT 估值。抽中者可以按你的出价把 NFT 卖给你，你同时拿到估值 0.5% 的定价费。只支持全系列和特征买单（至少 {MIN_TRAIT_HOLDERS} 个持有），不能给单个 NFT 估值。
+        A bid values NFTs in machines once it has rested 24 hours and is funded. Winners can sell the NFT to you at your price, and you earn a 0.5% pricing fee on the value. Only collection and trait bids (at least {MIN_TRAIT_HOLDERS} holders) are supported; single NFTs cannot be appraised.
       </div>
       <button
         className="btn btn-primary btn-lg"
         disabled={!address || busy || p === 0n || !deployment?.demoCollection}
         onClick={() =>
-          run(`挂买单 $${fmtUsdc(p)} × ${fills}`, (w) =>
+          run(`Place bid $${fmtUsdc(p)} × ${fills}`, (w) =>
             w({ address: deployment!.bidBook, abi: bidBookAbi, functionName: "placeBid", args: [deployment!.demoCollection!, trait, p, Number(fills || "1")] }),
           ).then((r) => r && setPrice(""))
         }
       >
-        挂买单
+        Place bid
       </button>
     </div>
   );
@@ -152,19 +152,19 @@ export function Bids() {
   return (
     <div className="stack" style={{ gap: 20 }}>
       <div>
-        <h1 className="h2">买单</h1>
-        <div className="muted">估值 = 承诺买单。你的买单决定了 NFT 在机器里值多少钱，估得准有定价费，估高了要按高价接盘。</div>
+        <h1 className="h2">Bids</h1>
+        <div className="muted">Value = committed bids. Your bids decide what NFTs are worth in machines: price well and you earn pricing fees, price too high and you buy at that price.</div>
       </div>
       <div className="page-cols">
         <div className="stack" style={{ gap: 20 }}>
           <div className="card card-pad stack">
-            <div className="between"><div className="h3">买单深度</div><span className="small muted">{collection?.name}</span></div>
+            <div className="between"><div className="h3">Bid depth</div><span className="small muted">{collection?.name}</span></div>
             {depth.length === 0 ? (
-              <Empty>还没有买单。</Empty>
+              <Empty>No bids yet.</Empty>
             ) : (
               <div className="table-wrap">
                 <table className="table">
-                  <thead><tr><th>特征</th><th>最高出价</th><th>买单数</th><th>可买数量</th><th>可估值</th></tr></thead>
+                  <thead><tr><th>Trait</th><th>Best bid</th><th>Bids</th><th>Size</th><th>Can value</th></tr></thead>
                   <tbody>
                     {depth.map((r) => (
                       <tr key={r.key}>
@@ -172,7 +172,7 @@ export function Bids() {
                         <td className="mono">${fmtUsdc(r.best)}</td>
                         <td>{r.count}</td>
                         <td>{r.size}</td>
-                        <td>{r.eligible > 0 ? <span className="badge badge-ok">{r.eligible} 笔</span> : <span className="badge">0</span>}</td>
+                        <td>{r.eligible > 0 ? <span className="badge badge-ok">{r.eligible}</span> : <span className="badge">0</span>}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -181,13 +181,13 @@ export function Bids() {
             )}
           </div>
           <div className="card card-pad stack">
-            <div className="h3">我的买单</div>
+            <div className="h3">My bids</div>
             {mine.length === 0 ? (
-              <Empty>{address ? "你还没有挂买单。" : "连接钱包查看。"}</Empty>
+              <Empty>{address ? "You have no bids yet." : "Connect a wallet to see your bids."}</Empty>
             ) : (
               <div className="table-wrap">
                 <table className="table">
-                  <thead><tr><th>#</th><th>特征</th><th>单价</th><th>剩余</th><th>状态</th><th /></tr></thead>
+                  <thead><tr><th>#</th><th>Trait</th><th>Price</th><th>Remaining</th><th>Status</th><th /></tr></thead>
                   <tbody>
                     {mine.map((b) => (
                       <tr key={b.id}>
@@ -198,8 +198,8 @@ export function Bids() {
                         <td>{status(b)}</td>
                         <td>
                           <button className="btn btn-sm btn-ghost" disabled={busy}
-                            onClick={() => run(`撤销买单 #${b.id}`, (w) => w({ address: deployment!.bidBook, abi: bidBookAbi, functionName: "cancelBid", args: [BigInt(b.id)] }))}>
-                            撤销
+                            onClick={() => run(`Cancel bid #${b.id}`, (w) => w({ address: deployment!.bidBook, abi: bidBookAbi, functionName: "cancelBid", args: [BigInt(b.id)] }))}>
+                            Cancel
                           </button>
                         </td>
                       </tr>
@@ -210,10 +210,10 @@ export function Bids() {
             )}
           </div>
           <div className="card card-pad stack">
-            <div className="h3">全部买单</div>
+            <div className="h3">All bids</div>
             <div className="table-wrap">
               <table className="table">
-                <thead><tr><th>#</th><th>出价人</th><th>特征</th><th>单价</th><th>剩余</th><th>状态</th></tr></thead>
+                <thead><tr><th>#</th><th>Bidder</th><th>Trait</th><th>Price</th><th>Remaining</th><th>Status</th></tr></thead>
                 <tbody>
                   {bids.filter((b) => b.active).map((b) => (
                     <tr key={b.id}>

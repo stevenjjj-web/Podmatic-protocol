@@ -32,12 +32,12 @@ function Swap({ orders }: { orders: FloorOrder[] }) {
     if (!deployment) return;
     if (side === "buy" && bestAsk) {
       if (!(await ensureToken(deployment.quote, deployment.floorBook, total))) return;
-      await run(`买入地板款 $${fmtUsdc(total)}`, (w) =>
+      await run(`Buy floor NFT $${fmtUsdc(total)}`, (w) =>
         w({ address: deployment.floorBook, abi: floorBookAbi, functionName: "buyFromOrder", args: [BigInt(bestAsk.id), (total * 101n) / 100n] }),
       );
     } else if (side === "sell" && bestBid && sellToken !== undefined && deployment.demoCollection) {
       if (!(await ensureNft(deployment.demoCollection, deployment.floorBook))) return;
-      await run(`卖出 #${Number(sellToken)} $${fmtUsdc(total)}`, (w) =>
+      await run(`Sell #${Number(sellToken)} $${fmtUsdc(total)}`, (w) =>
         w({ address: deployment.floorBook, abi: floorBookAbi, functionName: "sellToOrder", args: [BigInt(bestBid.id), sellToken, (total * 99n) / 100n] }),
       );
     }
@@ -46,19 +46,19 @@ function Swap({ orders }: { orders: FloorOrder[] }) {
   return (
     <div className="card swap-card stack">
       <div className="tabs">
-        <button className={`tab ${side === "buy" ? "active" : ""}`} onClick={() => setSide("buy")}>买入</button>
-        <button className={`tab ${side === "sell" ? "active" : ""}`} onClick={() => setSide("sell")}>卖出</button>
+        <button className={`tab ${side === "buy" ? "active" : ""}`} onClick={() => setSide("buy")}>Buy</button>
+        <button className={`tab ${side === "sell" ? "active" : ""}`} onClick={() => setSide("sell")}>Sell</button>
       </div>
       {side === "buy" ? (
         <>
-          <AmountPanel label="你付出" value={price ? fmtUsdc(total) : ""} readOnly footer={<span>含 1% 协议费</span>} />
+          <AmountPanel label="You pay" value={price ? fmtUsdc(total) : ""} readOnly footer={<span>Includes 1% protocol fee</span>} />
           <div className="panel stack-sm">
-            <div className="field-label">你得到</div>
+            <div className="field-label">You receive</div>
             <div className="between">
               <span className="amount-input" style={{ width: "auto" }}>1</span>
               <span className="token-chip">
                 {bestAsk ? <NftArt tokenId={bestAsk.inventory[bestAsk.inventory.length - 1]} traits={tokenTraits(collection, bestAsk.inventory[bestAsk.inventory.length - 1])} size={24} rounded={12} /> : null}
-                {collection?.name ?? "NFT"} 地板款
+                {collection?.name ?? "NFT"} floor
               </span>
             </div>
           </div>
@@ -66,24 +66,24 @@ function Swap({ orders }: { orders: FloorOrder[] }) {
       ) : (
         <>
           <div className="panel stack-sm">
-            <div className="field-label">你卖出</div>
+            <div className="field-label">You sell</div>
             {tokens.length === 0 ? (
-              <div className="muted">你没有可卖的 NFT。</div>
+              <div className="muted">You have no NFTs to sell.</div>
             ) : (
               <select className="select" value={String(sellToken)} onChange={(e) => setToken(e.target.value)}>
                 {tokens.map((t) => <option key={String(t)} value={String(t)}>{collection?.name} #{Number(t)}</option>)}
               </select>
             )}
           </div>
-          <AmountPanel label="你得到" value={price ? fmtUsdc(total) : ""} readOnly footer={<span>已扣 1% 协议费</span>} />
+          <AmountPanel label="You receive" value={price ? fmtUsdc(total) : ""} readOnly footer={<span>After 1% protocol fee</span>} />
         </>
       )}
       <div className="stack-sm" style={{ padding: "0 4px" }}>
-        <div className="kv"><span>最优订单</span><span>{(side === "buy" ? bestAsk : bestBid) ? `#${(side === "buy" ? bestAsk : bestBid)!.id} · ${short((side === "buy" ? bestAsk : bestBid)!.maker)}` : "—"}</span></div>
-        <div className="kv"><span>成交后价格变化</span><span>{(side === "buy" ? bestAsk : bestBid) ? `${side === "buy" ? "+" : "−"}${fmtPct((side === "buy" ? bestAsk : bestBid)!.deltaBps / 1e4, 1)}` : "—"}</span></div>
+        <div className="kv"><span>Best order</span><span>{(side === "buy" ? bestAsk : bestBid) ? `#${(side === "buy" ? bestAsk : bestBid)!.id} · ${short((side === "buy" ? bestAsk : bestBid)!.maker)}` : "—"}</span></div>
+        <div className="kv"><span>Price change after trade</span><span>{(side === "buy" ? bestAsk : bestBid) ? `${side === "buy" ? "+" : "−"}${fmtPct((side === "buy" ? bestAsk : bestBid)!.deltaBps / 1e4, 1)}` : "—"}</span></div>
       </div>
       <button className="btn btn-primary btn-lg" disabled={!address || busy || !price || (side === "sell" && sellToken === undefined)} onClick={submit}>
-        {!address ? "先连接钱包" : !price ? "没有可成交的订单" : side === "buy" ? "买入" : "卖出"}
+        {!address ? "Connect a wallet first" : !price ? "No order to trade against" : side === "buy" ? "Buy" : "Sell"}
       </button>
     </div>
   );
@@ -116,7 +116,7 @@ function CreateOrder() {
     const c = parseUsdc(cash);
     if (c > 0n && !(await ensureToken(deployment.quote, deployment.floorBook, c))) return;
     if (picked.length && !(await ensureNft(deployment.demoCollection, deployment.floorBook))) return;
-    const ok = await run("创建做市订单", (w) =>
+    const ok = await run("Create pool order", (w) =>
       w({ address: deployment.floorBook, abi: floorBookAbi, functionName: "createOrder", args: [deployment.demoCollection!, spotV, deltaBps, feeBps, c, picked] }),
     );
     if (ok) setPicked([]);
@@ -124,18 +124,18 @@ function CreateOrder() {
 
   return (
     <div className="card card-pad stack">
-      <div className="h3">创建做市订单</div>
+      <div className="h3">Create a market-making order</div>
       <div className="grid grid-3">
-        <div className="stack-sm"><div className="field-label">起始卖价</div><input className="input mono" value={spot} onChange={(e) => setSpot(e.target.value)} /></div>
-        <div className="stack-sm"><div className="field-label">每笔变动 %</div><input className="input mono" value={delta} onChange={(e) => setDelta(e.target.value)} /></div>
-        <div className="stack-sm"><div className="field-label">价差费 %</div><input className="input mono" value={fee} onChange={(e) => setFee(e.target.value)} /></div>
+        <div className="stack-sm"><div className="field-label">Start ask</div><input className="input mono" value={spot} onChange={(e) => setSpot(e.target.value)} /></div>
+        <div className="stack-sm"><div className="field-label">Delta per trade %</div><input className="input mono" value={delta} onChange={(e) => setDelta(e.target.value)} /></div>
+        <div className="stack-sm"><div className="field-label">Spread fee %</div><input className="input mono" value={fee} onChange={(e) => setFee(e.target.value)} /></div>
       </div>
-      <div className="stack-sm"><div className="field-label">放入 USDC（用于买入）</div><input className="input mono" value={cash} onChange={(e) => setCash(e.target.value)} /></div>
-      <div className="kv"><span>首笔买价 / 卖价</span><span>${fmtUsdc(bid)} / ${fmtUsdc(spotV)}</span></div>
+      <div className="stack-sm"><div className="field-label">USDC to deposit (for buying)</div><input className="input mono" value={cash} onChange={(e) => setCash(e.target.value)} /></div>
+      <div className="kv"><span>First bid / ask</span><span>${fmtUsdc(bid)} / ${fmtUsdc(spotV)}</span></div>
       <div className="stack-sm">
-        <div className="field-label">放入地板款 NFT（{picked.length} 个已选，只列出没有特征买单的）</div>
+        <div className="field-label">Floor NFTs to deposit ({picked.length} selected; only NFTs without trait bids are listed)</div>
         {floorTokens.length === 0 ? (
-          <div className="small muted">没有可放入的地板款。</div>
+          <div className="small muted">No floor NFTs to deposit.</div>
         ) : (
           <div className="row wrap" style={{ gap: 6 }}>
             {floorTokens.slice(0, 24).map((t) => {
@@ -149,8 +149,8 @@ function CreateOrder() {
           </div>
         )}
       </div>
-      <div className="notice notice-warn">不要放入带稀有特征的 NFT：任何人都能按订单卖价买走它，你换回的是地板价。</div>
-      <button className="btn btn-primary btn-lg" disabled={!address || busy || spotV === 0n} onClick={submit}>创建订单</button>
+      <div className="notice notice-warn">Do not deposit NFTs with rare traits: anyone can buy them at the order's ask, and you only get floor price.</div>
+      <button className="btn btn-primary btn-lg" disabled={!address || busy || spotV === 0n} onClick={submit}>Create order</button>
     </div>
   );
 }
@@ -163,19 +163,19 @@ export function Pool() {
   return (
     <div className="stack" style={{ gap: 20 }}>
       <div>
-        <h1 className="h2">地板做市</h1>
-        <div className="muted">Tensor 式双边做市订单：每个做市方带自己的曲线和价差。抽卡和玩家卖回带来的随机流量为做市付费。</div>
+        <h1 className="h2">Floor market making</h1>
+        <div className="muted">Tensor-style two-sided orders: each maker brings their own curve and spread. Random flow from spins and player sell-backs pays market makers.</div>
       </div>
       <div className="page-cols">
         <div className="stack" style={{ gap: 20 }}>
           <div className="card card-pad stack">
-            <div className="h3">订单簿</div>
+            <div className="h3">Order book</div>
             {orders.length === 0 ? (
-              <Empty>还没有做市订单。</Empty>
+              <Empty>No market-making orders yet.</Empty>
             ) : (
               <div className="table-wrap">
                 <table className="table">
-                  <thead><tr><th>#</th><th>做市方</th><th>买价</th><th>卖价</th><th>变动 / 价差</th><th>USDC</th><th>NFT</th><th /></tr></thead>
+                  <thead><tr><th>#</th><th>Maker</th><th>Bid</th><th>Ask</th><th>Delta / spread</th><th>USDC</th><th>NFT</th><th /></tr></thead>
                   <tbody>
                     {orders.map((o) => (
                       <tr key={o.id} style={{ opacity: o.active ? 1 : 0.5 }}>
@@ -194,8 +194,8 @@ export function Pool() {
                         <td>
                           {address && o.active && o.maker.toLowerCase() === address.toLowerCase() && (
                             <button className="btn btn-sm btn-ghost" disabled={busy}
-                              onClick={() => run(`关闭订单 #${o.id}`, (w) => w({ address: deployment!.floorBook, abi: floorBookAbi, functionName: "close", args: [BigInt(o.id)] }))}>
-                              关闭
+                              onClick={() => run(`Close order #${o.id}`, (w) => w({ address: deployment!.floorBook, abi: floorBookAbi, functionName: "close", args: [BigInt(o.id)] }))}>
+                              Close
                             </button>
                           )}
                         </td>

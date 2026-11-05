@@ -27,8 +27,8 @@ export const prob = (p: bigint) => Number(p) / 1e18;
 export const short = (a?: Address | string) => (a ? `${a.slice(0, 6)}…${a.slice(-4)}` : "—");
 
 export function fmtDuration(s: number): string {
-  if (s <= 0) return "已到期";
+  if (s <= 0) return "expired";
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
-  return h > 0 ? `${h} 小时 ${m} 分` : `${m} 分`;
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }

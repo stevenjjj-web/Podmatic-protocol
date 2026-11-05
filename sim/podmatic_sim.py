@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-"""Podmatic v2 经济模拟。
+"""Podmatic v2 economic simulation.
 
-两部分：
-  1. presets  —— 三套概率预设的解析统计（返还率、回本率、波动）。
-  2. simulate —— 单台机器的蒙特卡洛模拟：挂卡人陆续挂卡、玩家抽卡、
-     卖回 / 以卡换抽 / 持有、库存收益按天分配、金库LP承担储备。
+Two parts:
+  1. presets  -- analytic statistics for the three odds presets (return, hit rate, volatility).
+  2. simulate -- Monte Carlo of one machine: holders consign over time, players spin,
+     sell back / trade in / keep, inventory yield accrues daily, vault LPs fund the reserve.
 
-用法：
-  python3 sim/podmatic_sim.py              # 全部场景，输出 Markdown 到 stdout
-  python3 sim/podmatic_sim.py --runs 10    # 更少的随机路径，跑得更快
+Usage:
+  python3 sim/podmatic_sim.py              # all scenarios, Markdown to stdout
+  python3 sim/podmatic_sim.py --runs 10    # fewer paths, faster
 
-模型假设（全部可在 Scenario / 常量里改）：
-  - 卡牌参考价在档位区间内按对数均匀分布；参考价即市场价，预言机无误差。
-  - 档位按参考价划分，玩家返还率按参考价计，向挂卡人结算按挂价。
-  - 挂卡人报价风格：30% 急售(0.92-0.97)，50% 平价(0.98-1.02)，20% 惜售(1.03-1.05)。
-  - 玩家抽中后：35% 卖回现金(88%)，25% 以卡换抽(95%)，40% 持有。
-  - 有抽卡额度时优先用额度抽卡。
-  - 金库持有的回收卡按参考价重新上架，不领库存收益，净值按参考价 85% 计。
+Model assumptions (all adjustable in Scenario / constants):
+  - Reference values are log-uniform within each tier band; the reference value is the market value (no oracle error).
+  - Tiers are assigned by reference value, player return is measured in reference value, sellers are paid their ask.
+  - Seller ask styles: 30% eager (0.92-0.97), 50% fair (0.98-1.02), 20% reluctant (1.03-1.05).
+  - After a win: 35% sell back for cash (88%), 25% trade in for credit (95%), 40% keep.
+  - Players spend credit first when they have it.
+  - Recycled cards held by the vault are relisted at reference value, earn no yield, and are marked at 85% of reference.
 """
 
 import argparse
@@ -25,40 +25,40 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-P = 50.0  # 示例机器单抽价（美元）
-TIER_NAMES = ["普通", "罕见", "稀有", "史诗", "传说"]
-# 档位区间：单抽价的倍数（协议标准档位）
+P = 50.0  # example machine spin price (USD)
+TIER_NAMES = ["Common", "Uncommon", "Rare", "Epic", "Legendary"]
+# Tier bands as multiples of the spin price (protocol standard tiers)
 BANDS = [(0.2, 0.6), (0.6, 1.5), (1.5, 4.0), (4.0, 12.0), (12.0, 60.0)]
 
-# 每抽资金瀑布（占单抽价比例）
+# Per-spin money waterfall (share of spin price)
 FEE_PROTOCOL = 0.015
 FEE_CREATOR = 0.025
 FEE_FRONTEND = 0.01
-FEE_INVENTORY = 0.02  # 库存收益池：每抽固定拨入，不够时由储备补足
-INV_CAP = 0.06  # 库存收益总支出上限：当天流水的 6%
-# 库存收益率曲线：按档位“库存覆盖天数”定年化。覆盖天数 = 在架寄售价值 / 该档日均期望出货价值
-CURVE_D_LO, CURVE_D_HI = 3.0, 30.0  # 覆盖不足 3 天给最高年化，超过 30 天给最低年化
+FEE_INVENTORY = 0.02  # inventory yield pool: fixed per spin, topped up by the reserve when short
+INV_CAP = 0.06  # inventory yield cap: 6% of the day's flow
+# Inventory yield curve: APR set by a tier's days of coverage = consigned value / expected daily payout of the tier
+CURVE_D_LO, CURVE_D_HI = 3.0, 30.0  # under 3 days of coverage pays the max APR, over 30 days the min
 APR_MAX, APR_MIN = 1.00, 0.08
-FEE_PITY = 0.01  # 保底池
+FEE_PITY = 0.01  # pity pool
 TO_RESERVE = 1.0 - FEE_PROTOCOL - FEE_CREATOR - FEE_FRONTEND - FEE_INVENTORY - FEE_PITY
 
 SELLBACK_RATE = 0.88
 TRADEIN_RATE = 0.95
 P_SELLBACK = 0.35
 P_TRADEIN = 0.25
-WEIGHT_EXP = 3.0  # 档内权重 (V/a)^3
-ASK_CAP = 1.05  # 挂价上限：参考价 105%
-PAUSE_AT = 1.15  # 挂价超过参考价 115% 自动暂停
-VAULT_MARK = 0.85  # 回收卡净值计价
-SELLBACK_BUFFER = 20  # 储备低于 20 倍单抽价时，现金卖回自动改为以卡换抽
-RTP_FLOOR = 0.85  # 协议返还率下限
-ROYALTY = 0.02  # 流通分成：回收卡每次被再次抽中，按参考价 2% 付给最初的寄售人
+WEIGHT_EXP = 3.0  # in-tier weight (V/a)^3
+ASK_CAP = 1.05  # ask cap: 105% of reference
+PAUSE_AT = 1.15  # asks above 115% of reference are paused
+VAULT_MARK = 0.85  # NAV mark for recycled cards
+SELLBACK_BUFFER = 20  # below 20 spins of reserve, cash sell-back becomes trade-in
+RTP_FLOOR = 0.85  # protocol return floor
+ROYALTY = 0.02  # circulation royalty: 2% of reference to the original consignor each time a recycled card is drawn again
 
-# 非普通档的相对形状；普通档概率由校准求出
+# Relative shape of the non-common tiers; the common probability is solved by calibration
 SHAPES = {
-    "稳健": [22.0, 7.5, 2.2, 0.30],
-    "标准": [18.0, 7.0, 2.7, 0.25],
-    "追梦": [12.0, 5.0, 2.0, 0.70],
+    "Steady": [22.0, 7.5, 2.2, 0.30],
+    "Standard": [18.0, 7.0, 2.7, 0.25],
+    "Chase": [12.0, 5.0, 2.0, 0.70],
 }
 
 
@@ -71,7 +71,7 @@ def band_second_moment(lo, hi):
 
 
 def band_tail(lo, hi, x):
-    """对数均匀分布下 V >= x 的概率。"""
+    """P(V >= x) under a log-uniform distribution."""
     if x <= lo:
         return 1.0
     if x >= hi:
@@ -83,12 +83,12 @@ TIER_MEANS = [band_mean(lo, hi) for lo, hi in BANDS]
 
 
 def calibrate(shape, rtp):
-    """缩放非普通档概率，使期望价值（单抽价倍数）恰好等于 rtp。"""
+    """Scale the non-common probabilities so the expected value (in spin-price multiples) equals rtp."""
     q = np.array(shape) / 100.0
     m = np.array(TIER_MEANS)
     s = (rtp - m[0]) / float(np.sum(q * (m[1:] - m[0])))
     probs = np.concatenate([[1.0 - s * q.sum()], s * q])
-    assert probs.min() > 0, "形状与目标返还率不兼容"
+    assert probs.min() > 0, "shape incompatible with target return"
     return probs
 
 
@@ -104,23 +104,23 @@ def preset_stats(probs):
 
 
 def pity_cost(probs, threshold, session_len):
-    """保底的期望成本（占单抽价比例）。
+    """Expected pity cost as a share of the spin price.
 
-    一个钱包连续抽 session_len 次；连续 threshold 抽未出稀有及以上时，
-    下一抽只在稀有及以上档里抽，超出普通期望值的部分由保底池支付。
+    A wallet spins session_len times in a row. After `threshold` spins without rare or better,
+    the next spin draws only from rare and above; the excess over the normal expected value is paid by the pity pool.
     """
     p_hit = float(sum(probs[2:]))
     ev_all = sum(p * m for p, m in zip(probs, TIER_MEANS))
     ev_rare = sum(p * m for p, m in zip(probs[2:], TIER_MEANS[2:])) / p_hit
     extra = ev_rare - ev_all
-    # 动态规划：状态 = 当前连续未中数
+    # Dynamic programming over the current miss streak
     dist = np.zeros(threshold + 1)
     dist[0] = 1.0
     triggers = 0.0
     for _ in range(session_len):
         new = np.zeros_like(dist)
         triggers += dist[threshold]
-        new[0] += dist[threshold]  # 保底抽必中
+        new[0] += dist[threshold]  # a pity spin always hits
         new[0] += dist[:threshold].sum() * p_hit
         new[1:threshold + 1] += dist[:threshold] * (1 - p_hit)
         dist = new
@@ -128,7 +128,7 @@ def pity_cost(probs, threshold, session_len):
 
 
 # --------------------------------------------------------------------------
-# 蒙特卡洛
+# Monte Carlo
 # --------------------------------------------------------------------------
 
 
@@ -137,19 +137,19 @@ class Scenario:
     name: str
     spins_per_day: int
     lp_capital: float
-    supply_mult: float = 1.0  # 第三方挂卡到达率倍数
-    drift: float = 0.0  # 模拟期内卡价对数漂移，-0.29 约等于下跌 25%
+    supply_mult: float = 1.0  # multiplier on third-party consignment arrivals
+    drift: float = 0.0  # log price drift over the run; -0.29 is about -25%
     days: int = 90
     risk: float = 0.25
-    preset: str = "标准"
-    rtp: float = 0.89  # 抽取部分的返还率（按参考价），不含保底池
-    creator_seeded: bool = False  # 储备全部来自主理人的种子资金，没有外部LP
-    sellback: float = SELLBACK_RATE  # 现金卖回比例；v3 定价层下为型号池买入价，约 96%
+    preset: str = "Standard"
+    rtp: float = 0.89  # draw return (in reference value), excluding the pity pool
+    creator_seeded: bool = False  # reserve is entirely creator seed money, no outside LPs
+    sellback: float = SELLBACK_RATE  # cash sell-back rate; about 96% (pool bid) under the v3 pricing layer
     tradein: float = TRADEIN_RATE
 
 
 class TierBook:
-    """一个档位的在架卡。V0 为基准指数下的参考价，实时参考价 = V0 * 指数。"""
+    """Listings in one tier. V0 is the reference value at index 1; the live reference value is V0 * index."""
 
     def __init__(self):
         self.v0 = np.empty(0)
@@ -190,9 +190,9 @@ class TierBook:
         self.dirty = True
 
     def evaluate(self, idx, threshold):
-        """返回 (可抽权重, 档内期望参考价)；无可抽卡时返回 (None, 0)。
+        """Return (drawable weights, expected reference value in the tier), or (None, 0) if nothing is drawable.
 
-        可抽 = 未暂停，且（金库卡 或 挂价 <= 水位门槛）。
+        Drawable = not paused, and (vault-owned or ask <= water-level threshold).
         """
         if self.dirty or idx != self._idx:
             self._idx = idx
@@ -243,7 +243,7 @@ def pick(rng, w):
 
 
 def inventory_apr(days_covered):
-    """库存收益率曲线：供给越薄，年化越高。"""
+    """Inventory yield curve: thinner supply pays a higher APR."""
     s = min(1.0, max(0.0, (CURVE_D_HI - days_covered) / (CURVE_D_HI - CURVE_D_LO)))
     return APR_MIN + (APR_MAX - APR_MIN) * s
 
@@ -259,7 +259,7 @@ def run_once(sc: Scenario, seed: int):
     reserve = sc.lp_capital
     credit = 0.0
     risk = sc.risk
-    arrival = sc.supply_mult * 0.5 * n * base  # 第三方挂卡到达率（张/天）
+    arrival = sc.supply_mult * 0.5 * n * base  # third-party consignment arrivals (cards/day)
 
     def new_listing(k, t, idx):
         v = draw_value(rng, k)
@@ -281,7 +281,7 @@ def run_once(sc: Scenario, seed: int):
     for day in range(sc.days):
         idx = math.exp(sc.drift * day / sc.days)
 
-        # 1) 按实时参考价重新分档；超出机器区间的卡下架（金库卡按 90% 市价卖出）
+        # 1) Re-tier by live reference value; cards outside the machine's range leave (vault cards sold at 90%)
         moved = [[] for _ in range(nt)]
         for k in range(nt):
             b = books[k]
@@ -308,7 +308,7 @@ def run_once(sc: Scenario, seed: int):
             for row in moved[k]:
                 books[k].add(*row)
 
-        # 2) 挂卡人：超出耐心撤单；被暂停的挂单按 30%/天 的概率下调到参考价
+        # 2) Sellers delist after their patience runs out; paused asks are cut to reference with 30%/day probability
         for b in books:
             if not len(b):
                 continue
@@ -324,7 +324,7 @@ def run_once(sc: Scenario, seed: int):
             b.ask[vault] = v_now[vault]
             b.dirty = True
 
-        # 3) 新挂卡（当天开始时到达）
+        # 3) New consignments (arrive at the start of the day)
         for k in range(nt):
             for _ in range(rng.poisson(arrival[k])):
                 new_listing(k, day, idx)
@@ -332,20 +332,20 @@ def run_once(sc: Scenario, seed: int):
         inv_pool = 0.0
         day_flow = 0.0
 
-        # 4) 当天的抽卡
+        # 4) The day's spins
         for j in range(n):
             t = day + j / n
             stats["requested"] += 1
-            # 有额度先用额度（额度抽卡的费用由储备付现金）
+            # use credit first (fees on credit spins are paid in cash by the reserve)
             use_credit = credit >= P and reserve >= (1.0 - TO_RESERVE) * P
             inflow = -(1.0 - TO_RESERVE) * P if use_credit else TO_RESERVE * P
-            # 水位只看现金：额度只能用来抽卡，抽中的奖品仍受水位约束
+            # the water level counts cash only: credit can only buy spins, and prizes are still capped by the water level
             threshold = risk * (reserve + inflow)
             evals = [b.evaluate(idx, threshold) for b in books]
             live = np.array([e[0] is not None for e in evals])
             ev = np.array([e[1] for e in evals])
-            # 开机条件：至少两档有货；最低档期望不高于目标，最高档期望不低于返还率下限。
-            # 水位不足以达到目标时，本抽返还率降到最高可达值（不低于下限），前端实时展示。
+            # Open if at least two tiers are drawable, the cheapest is at or below target and the richest at or above the floor.
+            # If the water level cannot reach the target, this spin's return drops to the highest reachable value (not below the floor).
             if live.sum() < 2 or ev[live].min() > target or ev[live].max() < RTP_FLOOR * P:
                 continue
             goal = min(target, float(ev[live].max()))
@@ -398,7 +398,7 @@ def run_once(sc: Scenario, seed: int):
             u = rng.random()
             if u < P_SELLBACK:
                 amt = sc.sellback * cost_basis
-                # 卖回缓冲：现金卖回后储备仍需不低于 SELLBACK_BUFFER 抽，否则改为以卡换抽
+                # sell-back buffer: keep at least SELLBACK_BUFFER spins of reserve after a cash sell-back, otherwise trade in
                 if reserve - amt >= SELLBACK_BUFFER * P:
                     reserve -= amt
                 else:
@@ -408,8 +408,8 @@ def run_once(sc: Scenario, seed: int):
                 credit += sc.tradein * cost_basis
                 books[k].add(v0, v, False, t, 1e9)
 
-        # 5) 库存收益：各档按覆盖天数定年化，按参考价分给在架的第三方寄售卡。
-        #    先用收益池，不够由储备补足；总额不超过当天流水的 INV_CAP；池子剩余回流储备。
+        # 5) Inventory yield: each tier's APR comes from its days of coverage, paid to third-party listings by reference value.
+        #    The yield pool pays first, the reserve tops up; the total is capped at INV_CAP of the day's flow; leftovers return to the reserve.
         owed = []
         for k, b in enumerate(books):
             if not len(b):
@@ -443,16 +443,16 @@ def run_once(sc: Scenario, seed: int):
 
 
 SCENARIOS = [
-    Scenario("基准：日均400抽，LP 2万", 400, 20000),
-    Scenario("冷启动A：日均100抽，种子储备$500(10倍单抽)，风险系数1.0", 100, 500, risk=1.0, creator_seeded=True),
-    Scenario("冷启动B：日均100抽，种子储备$2,000(40倍单抽)，风险系数1.0", 100, 2000, risk=1.0, creator_seeded=True),
-    Scenario("冷启动C：日均100抽，种子储备$5,000(100倍单抽)，风险系数0.1", 100, 5000, risk=0.1, creator_seeded=True),
-    Scenario("小机器：日均100抽，LP 1万", 100, 10000),
-    Scenario("大机器：日均1500抽，LP 5万", 1500, 50000),
-    Scenario("供给不足：挂卡到达率减半", 400, 20000, supply_mult=0.5),
-    Scenario("熊市：90天卡价下跌25%", 400, 20000, drift=math.log(0.75)),
-    Scenario("竞争后：抽取返还率提到93%", 400, 20000, rtp=0.93),
-    Scenario("v3市价卖回：卖回96%、换抽97%", 400, 20000, sellback=0.96, tradein=0.97),
+    Scenario("Base: 400 spins/day, LP $20k", 400, 20000),
+    Scenario("Cold start A: 100 spins/day, $500 seed (10x spin), risk 1.0", 100, 500, risk=1.0, creator_seeded=True),
+    Scenario("Cold start B: 100 spins/day, $2,000 seed (40x spin), risk 1.0", 100, 2000, risk=1.0, creator_seeded=True),
+    Scenario("Cold start C: 100 spins/day, $5,000 seed (100x spin), risk 0.1", 100, 5000, risk=0.1, creator_seeded=True),
+    Scenario("Small: 100 spins/day, LP $10k", 100, 10000),
+    Scenario("Large: 1,500 spins/day, LP $50k", 1500, 50000),
+    Scenario("Thin supply: half the consignment arrivals", 400, 20000, supply_mult=0.5),
+    Scenario("Bear market: prices -25% over 90 days", 400, 20000, drift=math.log(0.75)),
+    Scenario("Competitive: draw return raised to 93%", 400, 20000, rtp=0.93),
+    Scenario("v3 market sell-back: sell back 96%, trade in 97%", 400, 20000, sellback=0.96, tradein=0.97),
 ]
 
 
@@ -461,8 +461,8 @@ def fmt_pct(x, digits=1):
 
 
 def report_presets():
-    out = ["## 一、概率预设（单抽50美元，抽取返还率89%，按参考价）", ""]
-    out.append("| 预设 | 普通 | 罕见 | 稀有 | 史诗 | 传说 | 返还率 | 回本率(≥1倍) | ≥5倍 | ≥20倍 | 单抽标准差 | 保底成本(阈值40/会话50抽) |")
+    out = ["## 1. Odds presets ($50 spin, 89% draw return, in reference value)", ""]
+    out.append("| Preset | Common | Uncommon | Rare | Epic | Legendary | Return | Hit rate (>=1x) | >=5x | >=20x | Spin std dev | Pity cost (threshold 40 / 50-spin session) |")
     out.append("|---|---|---|---|---|---|---|---|---|---|---|---|")
     for name, shape in SHAPES.items():
         probs = calibrate(shape, 0.89)
@@ -471,13 +471,13 @@ def report_presets():
         cells = " | ".join(fmt_pct(p, 2) for p in probs)
         out.append(
             f"| {name} | {cells} | {fmt_pct(s['ev'])} | {fmt_pct(s['hit1'])} | {fmt_pct(s['hit5'], 2)} "
-            f"| {fmt_pct(s['hit20'], 2)} | {s['sd']:.2f}倍 | {fmt_pct(pc, 2)} |")
+            f"| {fmt_pct(s['hit20'], 2)} | {s['sd']:.2f}x | {fmt_pct(pc, 2)} |")
     out.append("")
-    out.append("保底阈值敏感性（标准预设）：")
+    out.append("Pity threshold sensitivity (Standard preset):")
     out.append("")
-    out.append("| 阈值 | 会话20抽 | 会话50抽 | 会话200抽 |")
+    out.append("| Threshold | 20-spin session | 50-spin session | 200-spin session |")
     out.append("|---|---|---|---|")
-    probs = calibrate(SHAPES["标准"], 0.89)
+    probs = calibrate(SHAPES["Standard"], 0.89)
     for th in (20, 30, 40, 50):
         row = " | ".join(fmt_pct(pity_cost(probs, th, sl), 2) for sl in (20, 50, 200))
         out.append(f"| {th} | {row} |")
@@ -486,8 +486,8 @@ def report_presets():
 
 
 def report_sim(runs):
-    out = [f"## 二、单机蒙特卡洛（每个场景 {runs} 条路径，90天，标准预设）", ""]
-    summary = ["| 场景 | 月流水 | 需求满足率 | 降档抽占比 | 玩家抽取返还率 | 库存收益/流水 | 流通分成/流水 | 回收卡占出货 | LP收益/流水 | LP净值90天变化(中位/最差) | 最大回撤(中位/最差) | 主理人月收入 | 协议月收入 | 挂卡人月库存收益 | 偿付失败 |",
+    out = [f"## 2. Single-machine Monte Carlo ({runs} paths per scenario, 90 days, Standard preset)", ""]
+    summary = ["| Scenario | Monthly flow | Demand served | Degraded spins | Player draw return | Yield / flow | Royalty / flow | Recycled share of draws | LP take / flow | LP NAV change 90d (median / worst) | Max drawdown (median / worst) | Creator / month | Protocol / month | Seller yield / month | Insolvencies |",
                "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     seller_tables = []
     for sc in SCENARIOS:
@@ -503,7 +503,7 @@ def report_sim(runs):
         else:
             nav = [r["nav_end"] for r in res]
             usd = lambda x: f"-${-x:,.0f}" if x < 0 else f"${x:,.0f}"
-            nav_cell = f"种子储备净值 {usd(np.median(nav))} / {usd(np.min(nav))}"
+            nav_cell = f"seed NAV {usd(np.median(nav))} / {usd(np.min(nav))}"
             dd_cell = "—"
         creator = np.median([r["stats"]["creator"] / months for r in res])
         proto = np.median([r["stats"]["protocol"] / months for r in res])
@@ -515,13 +515,13 @@ def report_sim(runs):
         served = np.median([r["stats"]["spins"] / r["stats"]["requested"] for r in res])
         degraded = np.median([r["stats"]["degraded"] / max(1, r["stats"]["spins"]) for r in res])
         share = np.median([r["stats"]["yield_paid"] / max(1.0, r["stats"]["spins"] * P) for r in res])
-        assert sum(r["stats"]["rtp_miss"] for r in res) == 0, "返还率锁定失败"
+        assert sum(r["stats"]["rtp_miss"] for r in res) == 0, "RTP lock failed"
         summary.append(
             f"| {sc.name} | ${flow:,.0f} | {fmt_pct(served)} | {fmt_pct(degraded)} | {fmt_pct(rtp)} | {fmt_pct(share, 2)} | {fmt_pct(roy, 2)} | {fmt_pct(recyc, 0)} | {fmt_pct(lp_take)} | {nav_cell} "
             f"| {dd_cell} | ${creator:,.0f} | ${proto:,.0f} | ${yld:,.0f} | {insolvent} |")
 
         rows = [f"**{sc.name}**", "",
-                "| 档位 | 售出张数/路径 | 成交等待天数(中位/P90) | 挂价/参考价 | 库存收益/挂价 | 等待期年化(中位天) | 挂卡人到手/参考价(中位/P10) | 期末在架 |",
+                "| Tier | Sold per path | Days to sale (median / P90) | Ask / reference | Yield / ask | APR while waiting (median day) | Seller take / reference (median / P10) | Listed at end |",
                 "|---|---|---|---|---|---|---|---|"]
         for k, name in enumerate(TIER_NAMES):
             sold = [x for r in res for x in r["stats"]["sold"][k]]
@@ -537,7 +537,7 @@ def report_sim(runs):
                 f"| {np.median([r['listed_end'][k] for r in res]):.0f} |")
         rows.append("")
         seller_tables.extend(rows)
-    out += summary + ["", "### 挂卡人视角（只统计第三方寄售卡）", ""] + seller_tables
+    out += summary + ["", "### Seller view (third-party consignments only)", ""] + seller_tables
     return out
 
 
@@ -545,8 +545,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--runs", type=int, default=30)
     args = ap.parse_args()
-    lines = ["# Podmatic v2 模拟结果", "",
-             "由 `python3 sim/podmatic_sim.py --runs %d` 生成。假设见脚本顶部文档字符串。" % args.runs, ""]
+    lines = ["# Podmatic v2 simulation results", "",
+             "Generated by `python3 sim/podmatic_sim.py --runs %d`. Assumptions are in the script's docstring." % args.runs, ""]
     lines += report_presets()
     lines += report_sim(args.runs)
     print("\n".join(lines))

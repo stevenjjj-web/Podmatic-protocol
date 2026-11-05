@@ -46,7 +46,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
       <QueryClientProvider client={queryClient}>
         <RainbowKitProvider
           initialChain={defaultChainId}
-          locale="zh-CN"
+          locale="en-US"
           modalSize="compact"
           theme={{
             lightMode: lightTheme({ accentColor: "#FF37C7", borderRadius: "large" }),

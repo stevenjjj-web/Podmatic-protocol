@@ -57,7 +57,7 @@ function SellPanel({ tokenId, bids, bidsLoading, onDone }: { tokenId: bigint; bi
   async function sellToBid() {
     if (!nft || !deployment || !fill) return;
     if (!(await ensureNft(nft, deployment.bidBook))) return;
-    const ok = await run(`卖给买单 · $${fmtUsdc(fill.price)}`, (w) =>
+    const ok = await run(`Sell to bid · $${fmtUsdc(fill.price)}`, (w) =>
       w({ address: deployment.bidBook, abi: bidBookAbi, functionName: "fill", args: [BigInt(fill.id), tokenId, proofFor(collection, tokenId, fill.traitKey), fill.price] }),
     );
     if (ok) onDone();
@@ -66,7 +66,7 @@ function SellPanel({ tokenId, bids, bidsLoading, onDone }: { tokenId: bigint; bi
   async function consign() {
     if (!nft || !machine || !client) return;
     if (!(await ensureNft(nft, machine.address))) return;
-    const receipt = await run(`寄售到 ${machine.name}`, (w) =>
+    const receipt = await run(`Consign to ${machine.name}`, (w) =>
       w({ address: machine.address, abi: machineAbi, functionName: "list", args: [tokenId, floorValue, traitForListing, proofFor(collection, tokenId, traitForListing)] }),
     );
     if (!receipt) return;
@@ -81,7 +81,7 @@ function SellPanel({ tokenId, bids, bidsLoading, onDone }: { tokenId: bigint; bi
       if (ok) { bidId = b.id; break; }
     }
     if (listed && bidId !== undefined) {
-      await run("按买单估值，进入可抽区间", (w) =>
+      await run("Value by bid and make drawable", (w) =>
         w({ address: machine.address, abi: machineAbi, functionName: "refreshValuation", args: [listed.args.listingId, BigInt(bidId)] }),
       );
     }
@@ -92,7 +92,7 @@ function SellPanel({ tokenId, bids, bidsLoading, onDone }: { tokenId: bigint; bi
     if (!nft || !deployment || !bestOrder) return;
     if (!(await ensureNft(nft, deployment.floorBook))) return;
     const minOut = (bestOrder.bid * 98n) / 100n;
-    const ok = await run(`卖进做市订单 · $${fmtUsdc(bestOrder.bid)}`, (w) =>
+    const ok = await run(`Sell into pool order · $${fmtUsdc(bestOrder.bid)}`, (w) =>
       w({ address: deployment.floorBook, abi: floorBookAbi, functionName: "sellToOrder", args: [BigInt(bestOrder.id), tokenId, minOut] }),
     );
     if (ok) onDone();
@@ -103,7 +103,7 @@ function SellPanel({ tokenId, bids, bidsLoading, onDone }: { tokenId: bigint; bi
     const a = parseUsdc(ask);
     if (a === 0n) return;
     if (!(await ensureNft(nft, deployment.odds))) return;
-    const ok = await run(`概率出售 · 要价 $${fmtUsdc(a)}`, (w) =>
+    const ok = await run(`Sell by odds · ask $${fmtUsdc(a)}`, (w) =>
       w({ address: deployment.odds, abi: oddsAbi, functionName: "list", args: [nft, tokenId, a] }),
     );
     if (ok) onDone();
@@ -120,19 +120,19 @@ function SellPanel({ tokenId, bids, bidsLoading, onDone }: { tokenId: bigint; bi
       </div>
       <div className="grid grid-2" style={{ gap: 8 }}>
         <div className="panel stack-sm">
-          <div className="small muted">现在就能卖</div>
+          <div className="small muted">Sell now for</div>
           <div className="stat-value">{fill ? `$${fmtUsdc(fill.price)}` : "—"}</div>
-          <div className="small faint">{fill ? traitLabel(collection, fill.traitKey) : "没有买单"}</div>
+          <div className="small faint">{fill ? traitLabel(collection, fill.traitKey) : "No bids"}</div>
         </div>
         <div className="panel stack-sm">
-          <div className="small muted">机器估值</div>
+          <div className="small muted">Machine value</div>
           <div className="stat-value">{valuation ? `$${fmtUsdc(valuation.price)}` : "—"}</div>
-          <div className="small faint">{valuation ? "有效买单（已满 24 小时）" : "暂无有效买单"}</div>
+          <div className="small faint">{valuation ? "Eligible bid (rested 24h)" : "No eligible bid yet"}</div>
         </div>
       </div>
 
       <div className="segmented" style={{ alignSelf: "stretch", display: "grid", gridTemplateColumns: "repeat(4,1fr)" }}>
-        {([["machine", "放进机器"], ["bid", "卖给买单"], ["pool", "卖进做市"], ["odds", "概率出售"]] as [Exit, string][]).map(([k, l]) => (
+        {([["machine", "Machine"], ["bid", "Bid"], ["pool", "Pool"], ["odds", "Odds"]] as [Exit, string][]).map(([k, l]) => (
           <button key={k} className={exit === k ? "active" : ""} onClick={() => setExit(k)}>{l}</button>
         ))}
       </div>
@@ -143,26 +143,26 @@ function SellPanel({ tokenId, bids, bidsLoading, onDone }: { tokenId: bigint; bi
             {machines.map((m) => <option key={m.address} value={m.address}>{m.name}</option>)}
           </select>
           <AmountPanel
-            label="底价：低于这个价不卖"
+            label="Floor price: won't sell below this"
             value={floor || defaultFloor}
             onChange={setFloor}
-            footer={<><span>被抽中时到手 ≈ ${fmtUsdc(valuation ? (valuation.price * (10000n + PREMIUM_BPS - PRICING_FEE_BPS)) / 10000n : 0n)} ＋ 库存收益</span><span>估值 × 1.015</span></>}
+            footer={<><span>You get ≈ ${fmtUsdc(valuation ? (valuation.price * (10000n + PREMIUM_BPS - PRICING_FEE_BPS)) / 10000n : 0n)} + inventory yield when drawn</span><span>value × 1.015</span></>}
           />
           {valuation ? (
             drawable ? (
               <div className="notice notice-info">
-                ✓ 进入{TIER_NAMES[tier]}档，可被抽中。成交价由买单决定，与底价无关。在架期间分享每抽 1.5% 的库存收益（挂满 3 天可领，7 天内撤回则没收）；这件 NFT 以后被别人再寄售卖出时，你还能拿估值的 1% 流通分成。
+                ✓ Goes into the {TIER_NAMES[tier]} tier and can be drawn. The bid sets the price, not your floor. While listed you share 1.5% of every spin as inventory yield (claimable after 3 days, forfeited if you delist within 7 days). If someone else later re-consigns and sells this NFT, you earn a 1% circulation royalty.
               </div>
             ) : (
               <div className="notice notice-warn">
-                {tier < 0 ? "估值不在这台机器的档位范围内。" : "底价高于估值 × 1.02，暂时不会被抽中；买单涨上来后会自动进入区间。"}
+                {tier < 0 ? "Its value is outside this machine's tiers." : "Your floor is above value × 1.02, so it cannot be drawn yet; it becomes drawable automatically when bids rise."}
               </div>
             )
           ) : (
-            <div className="notice notice-neutral">还没有能给它估值的有效买单。可以先寄售，等买单出现后任何人都能刷新估值。</div>
+            <div className="notice notice-neutral">No eligible bid can value it yet. You can consign now; once a bid appears, anyone can refresh the valuation.</div>
           )}
           <button className="btn btn-primary btn-lg" disabled={busy || !machine || bidsLoading} onClick={consign}>
-            {bidsLoading ? "读取买单中…" : "寄售到机器"}
+            {bidsLoading ? "Loading bids…" : "Consign to machine"}
           </button>
         </div>
       )}
@@ -170,34 +170,34 @@ function SellPanel({ tokenId, bids, bidsLoading, onDone }: { tokenId: bigint; bi
       {exit === "bid" && (
         <div className="stack">
           <div className="panel stack-sm">
-            <div className="kv"><span>最高买单</span><span>{fill ? `$${fmtUsdc(fill.price)}` : "—"}</span></div>
-            <div className="kv"><span>买单类型</span><span>{fill ? traitLabel(collection, fill.traitKey) : "—"}</span></div>
-            <div className="kv"><span>到手（扣 1% 协议费）</span><span>{fill ? `$${fmtUsdc((fill.price * 99n) / 100n)}` : "—"}</span></div>
+            <div className="kv"><span>Best bid</span><span>{fill ? `$${fmtUsdc(fill.price)}` : "—"}</span></div>
+            <div className="kv"><span>Bid type</span><span>{fill ? traitLabel(collection, fill.traitKey) : "—"}</span></div>
+            <div className="kv"><span>You get (after 1% protocol fee)</span><span>{fill ? `$${fmtUsdc((fill.price * 99n) / 100n)}` : "—"}</span></div>
           </div>
           <button className="btn btn-primary btn-lg" disabled={busy || !fill} onClick={sellToBid}>
-            {fill ? "立即卖出" : "没有可成交的买单"}
+            {fill ? "Sell now" : "No bid to sell into"}
           </button>
         </div>
       )}
 
       {exit === "pool" && (
         <div className="stack">
-          <div className="notice notice-neutral">做市订单只按地板价收。带稀有特征的 NFT 卖进去会损失溢价。</div>
+          <div className="notice notice-neutral">Pool orders pay floor price only. Selling an NFT with rare traits here gives up its premium.</div>
           <div className="panel stack-sm">
-            <div className="kv"><span>最优做市买价</span><span>{bestOrder ? `$${fmtUsdc(bestOrder.bid)}` : "—"}</span></div>
-            <div className="kv"><span>到手（扣 1% 协议费）</span><span>{bestOrder ? `$${fmtUsdc((bestOrder.bid * 99n) / 100n)}` : "—"}</span></div>
+            <div className="kv"><span>Best pool bid</span><span>{bestOrder ? `$${fmtUsdc(bestOrder.bid)}` : "—"}</span></div>
+            <div className="kv"><span>You get (after 1% protocol fee)</span><span>{bestOrder ? `$${fmtUsdc((bestOrder.bid * 99n) / 100n)}` : "—"}</span></div>
           </div>
-          <button className="btn btn-primary btn-lg" disabled={busy || !bestOrder} onClick={sellToPool}>卖进做市订单</button>
+          <button className="btn btn-primary btn-lg" disabled={busy || !bestOrder} onClick={sellToPool}>Sell into pool order</button>
         </div>
       )}
 
       {exit === "odds" && (
         <div className="stack">
-          <AmountPanel label="要价：有人抽中时你拿到的钱（另加 1.5% 奖励）" value={ask} onChange={setAsk} />
+          <AmountPanel label="Ask: what you receive when someone wins it (plus a 1.5% bonus)" value={ask} onChange={setAsk} />
           <div className="notice notice-neutral">
-            买家按要价的 1%–50% 购买中奖概率，金库承担波动。买家看得到这件 NFT，要价太高就没人买。
+            Buyers pay 1–50% of the ask for the same chance to win; the vault carries the variance. Buyers see this exact NFT, so an ask that is too high simply gets no buyers.
           </div>
-          <button className="btn btn-primary btn-lg" disabled={busy || !ask} onClick={listOdds}>挂到概率买</button>
+          <button className="btn btn-primary btn-lg" disabled={busy || !ask} onClick={listOdds}>List on Odds</button>
         </div>
       )}
     </div>
@@ -237,14 +237,14 @@ function PendingExits() {
   if (!open.length) return null;
   return (
     <div className="card card-pad stack">
-      <div className="h3">抽中的 NFT：可按估值卖出</div>
+      <div className="h3">NFTs you won: sell at their value</div>
       {open.map((x) => (
         <div key={String(x.earmarkId)} className="between">
           <div className="row">
             <NftArt tokenId={x.tokenId} traits={tokenTraits(collection, x.tokenId)} size={44} rounded={10} />
             <div>
               <div style={{ fontWeight: 535 }}>#{Number(x.tokenId)}</div>
-              <div className="small muted">剩余 {fmtDuration(Number(x.e!.expiry - now!))}</div>
+              <div className="small muted">{fmtDuration(Number(x.e!.expiry - now!))} left</div>
             </div>
           </div>
           <button
@@ -252,12 +252,12 @@ function PendingExits() {
             disabled={busy}
             onClick={async () => {
               if (!deployment?.demoCollection || !(await ensureNft(deployment.demoCollection, deployment.bidBook))) return;
-              await run(`按估值卖出 #${Number(x.tokenId)}`, (w) =>
+              await run(`Sell #${Number(x.tokenId)} at its value`, (w) =>
                 w({ address: deployment.bidBook, abi: bidBookAbi, functionName: "fillEarmark", args: [x.earmarkId] }),
               );
             }}
           >
-            卖出 ${fmtUsdc((x.e!.amount * 99n) / 100n)}
+            Sell ${fmtUsdc((x.e!.amount * 99n) / 100n)}
           </button>
         </div>
       ))}
@@ -287,10 +287,10 @@ function MyListings() {
   if (!mine.length && !myOdds.length) return null;
   return (
     <div className="card card-pad stack">
-      <div className="h3">我挂出的</div>
+      <div className="h3">My listings</div>
       <div className="table-wrap">
         <table className="table">
-          <thead><tr><th>NFT</th><th>位置</th><th>底价 / 要价</th><th>估值</th><th>状态</th><th>库存收益</th><th /></tr></thead>
+          <thead><tr><th>NFT</th><th>Where</th><th>Floor / ask</th><th>Value</th><th>Status</th><th>Inventory yield</th><th /></tr></thead>
           <tbody>
             {mine.map(({ l, call }, idx) => {
               const m = machines.find((x) => x.address === call.address)!;
@@ -303,22 +303,22 @@ function MyListings() {
                   <td>{m.name}</td>
                   <td>${fmtUsdc(l!.floorPrice)}</td>
                   <td>{l!.value ? `$${fmtUsdc(l!.value)}` : "—"}</td>
-                  <td>{l!.status === 2 ? <span className="badge badge-ok">可抽 · {TIER_NAMES[l!.tier]}</span> : <span className="badge">区间外</span>}</td>
+                  <td>{l!.status === 2 ? <span className="badge badge-ok">Drawable · {TIER_NAMES[l!.tier]}</span> : <span className="badge">Out of range</span>}</td>
                   <td>
                     <div className="row">
                       <span className="mono">${fmtUsdc(owed, 4)}</span>
                       <button className="btn btn-sm btn-soft" disabled={busy || !vested || owed === 0n}
-                        title={vested ? "" : "挂满 3 天后可领"}
-                        onClick={() => run(`领取库存收益 #${Number(l!.tokenId)}`, (w) => w({ address: call.address, abi: machineAbi, functionName: "claimYield", args: call.args }))}>
-                        {vested ? "领取" : "未满 3 天"}
+                        title={vested ? "" : "Claimable after 3 days listed"}
+                        onClick={() => run(`Claim inventory yield #${Number(l!.tokenId)}`, (w) => w({ address: call.address, abi: machineAbi, functionName: "claimYield", args: call.args }))}>
+                        {vested ? "Claim" : "< 3 days"}
                       </button>
                     </div>
                   </td>
                   <td>
                     <button className="btn btn-sm btn-ghost" disabled={busy}
-                      title={safeToDelist ? "" : "挂单未满 7 天，撤回会没收未领的库存收益"}
-                      onClick={() => run(`撤回 #${Number(l!.tokenId)}`, (w) => w({ address: call.address, abi: machineAbi, functionName: "delist", args: call.args }))}>
-                      撤回{!safeToDelist && owed > 0n ? "（没收收益）" : ""}
+                      title={safeToDelist ? "" : "Listed under 7 days: delisting forfeits unclaimed inventory yield"}
+                      onClick={() => run(`Delist #${Number(l!.tokenId)}`, (w) => w({ address: call.address, abi: machineAbi, functionName: "delist", args: call.args }))}>
+                      Delist{!safeToDelist && owed > 0n ? " (forfeits yield)" : ""}
                     </button>
                   </td>
                 </tr>
@@ -327,15 +327,15 @@ function MyListings() {
             {myOdds.map((l) => (
               <tr key={`odds-${l.id}`}>
                 <td><div className="row"><NftArt tokenId={l.tokenId} traits={tokenTraits(collection, l.tokenId)} size={32} rounded={8} />#{Number(l.tokenId)}</div></td>
-                <td>概率买</td>
+                <td>Odds</td>
                 <td>${fmtUsdc(l.ask)}</td>
                 <td>—</td>
-                <td>{l.pending ? <span className="badge badge-warn">开奖中</span> : <span className="badge badge-ok">挂出中</span>}</td>
+                <td>{l.pending ? <span className="badge badge-warn">Revealing</span> : <span className="badge badge-ok">Listed</span>}</td>
                 <td>—</td>
                 <td>
                   <button className="btn btn-sm btn-ghost" disabled={busy || l.pending}
-                    onClick={() => run(`撤回 #${Number(l.tokenId)}`, (w) => w({ address: deployment!.odds, abi: oddsAbi, functionName: "delist", args: [BigInt(l.id)] }))}>
-                    撤回
+                    onClick={() => run(`Delist #${Number(l.tokenId)}`, (w) => w({ address: deployment!.odds, abi: oddsAbi, functionName: "delist", args: [BigInt(l.id)] }))}>
+                    Delist
                   </button>
                 </td>
               </tr>
@@ -358,24 +358,24 @@ export function Sell() {
   return (
     <div className="stack" style={{ gap: 20 }}>
       <div>
-        <h1 className="h2">挂卡</h1>
-        <div className="muted">卖家只给底价，成交价交给买单。四个出口任选：放进机器、直接卖给买单、卖进做市订单、概率出售。</div>
+        <h1 className="h2">Sell</h1>
+        <div className="muted">Sellers only set a floor; bids set the price. Four exits: consign to a machine, sell to a bid, sell into a pool order, or sell by odds.</div>
       </div>
       <PendingExits />
       <div className="page-cols">
         <div className="card card-pad stack">
           <div className="between">
-            <div className="h3">我的 NFT</div>
-            <span className="small muted">{tokens.length} 件</span>
+            <div className="h3">My NFTs</div>
+            <span className="small muted">{tokens.length} items</span>
           </div>
           {!address ? (
-            <Empty>连接钱包后查看你的 NFT。</Empty>
+            <Empty>Connect a wallet to see your NFTs.</Empty>
           ) : !deployment?.demoCollection ? (
-            <Empty>这条链上没有注册演示系列。</Empty>
+            <Empty>No demo collection is registered on this chain.</Empty>
           ) : isLoading ? (
             <div className="grid grid-nft">{[0, 1, 2, 3].map((i) => <Skeleton key={i} h={200} />)}</div>
           ) : tokens.length === 0 ? (
-            <Empty>你还没有 {collection?.name}。可以去抽一个，或在做市页买一个地板款。</Empty>
+            <Empty>You do not own any {collection?.name} yet. Spin for one, or buy a floor NFT on the Pool page.</Empty>
           ) : (
             <div className="grid grid-nft">
               {tokens.map((id) => {
@@ -384,8 +384,8 @@ export function Sell() {
                 return (
                   <NftTile key={String(id)} tokenId={id} selected={id === current} onClick={() => setSelected(id)}>
                     <div className="between small">
-                      <span className="muted">{fill ? `$${fmtUsdc(fill.price)}` : "无买单"}</span>
-                      {rare && <span className="badge badge-accent">特征</span>}
+                      <span className="muted">{fill ? `$${fmtUsdc(fill.price)}` : "no bids"}</span>
+                      {rare && <span className="badge badge-accent">Trait</span>}
                     </div>
                   </NftTile>
                 );

@@ -14,7 +14,7 @@ export function useApprovals() {
       if (!address || !client) return false;
       const allowance = await client.readContract({ address: token, abi: erc20Abi, functionName: "allowance", args: [address, spender] });
       if (allowance >= amount) return true;
-      const r = await run("授权 USDC", (w) => w({ address: token, abi: erc20Abi, functionName: "approve", args: [spender, maxUint256] }));
+      const r = await run("Approve USDC", (w) => w({ address: token, abi: erc20Abi, functionName: "approve", args: [spender, maxUint256] }));
       return !!r;
     },
     [address, client, run],
@@ -25,7 +25,7 @@ export function useApprovals() {
       if (!address || !client) return false;
       const ok = await client.readContract({ address: nft, abi: erc721Abi, functionName: "isApprovedForAll", args: [address, operator] });
       if (ok) return true;
-      const r = await run("授权 NFT", (w) => w({ address: nft, abi: erc721Abi, functionName: "setApprovalForAll", args: [operator, true] }));
+      const r = await run("Approve NFT", (w) => w({ address: nft, abi: erc721Abi, functionName: "setApprovalForAll", args: [operator, true] }));
       return !!r;
     },
     [address, client, run],

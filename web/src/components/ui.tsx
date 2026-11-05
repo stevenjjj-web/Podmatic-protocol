@@ -15,7 +15,7 @@ export function Modal({ open, onClose, children, title }: { open: boolean; onClo
         {title && (
           <div className="between" style={{ marginBottom: 12 }}>
             <div className="h3">{title}</div>
-            <button className="icon-btn" onClick={onClose} aria-label="关闭">✕</button>
+            <button className="icon-btn" onClick={onClose} aria-label="Close">✕</button>
           </div>
         )}
         {children}
@@ -85,4 +85,4 @@ export function Empty({ children }: { children: ReactNode }) {
 }
 
 export const TIER_COLORS = ["#9B9B9B", "#40B66B", "#4C82FB", "#B15DFF", "#FF9F0A"];
-export const TIER_NAMES = ["普通", "罕见", "稀有", "史诗", "传说"];
+export const TIER_NAMES = ["Common", "Uncommon", "Rare", "Epic", "Legendary"];
