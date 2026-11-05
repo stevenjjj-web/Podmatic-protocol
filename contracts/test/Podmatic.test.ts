@@ -105,9 +105,10 @@ describe("Machine", () => {
     const { factory, nft } = await loadFixture(deployCore);
     const base = {
       nft: await nft.getAddress(), spinPrice: usdc(50), targetRtpBps: 8900, creatorFeeBps: 250, riskBps: 2500,
-      tiers: TIERS, name: "x",
+      pityThreshold: 40, tiers: TIERS, name: "x",
     };
     await expect(factory.createMachine({ ...base, targetRtpBps: 9800 })).to.be.revertedWith("rtp");
+    await expect(factory.createMachine({ ...base, pityThreshold: 5 })).to.be.revertedWith("pity");
     const wide = [...TIERS];
     wide[1] = { ...wide[1], maxValue: usdc(100) };
     await expect(factory.createMachine({ ...base, tiers: wide })).to.be.revertedWith("band too wide");
@@ -130,6 +131,7 @@ describe("Machine", () => {
   });
 
   it("settles a spin: player gets the NFT, seller gets V + premium, bidder gets the pricing fee", async () => {
+    // Seller take = V * (1 + 2% premium - 0.5% pricing fee); no royalty on a first sale.
     const { machine, randomness, quote, nft, player, seller, bidder, treasury, bidBook } =
       await loadFixture(deployMachineWithInventory);
     await quote.connect(player).approve(await machine.getAddress(), ethers.MaxUint256);
@@ -147,7 +149,7 @@ describe("Machine", () => {
     const { tokenId, value, earmarkId } = settled!.args;
 
     expect(await nft.ownerOf(tokenId)).to.equal(player.address);
-    expect((await quote.balanceOf(seller.address)) - sellerBefore).to.equal((value * 10300n) / 10000n - (value * 50n) / 10000n);
+    expect((await quote.balanceOf(seller.address)) - sellerBefore).to.equal((value * 10150n) / 10000n);
     expect((await quote.balanceOf(bidder.address)) - bidderBefore).to.equal((value * 50n) / 10000n);
     // protocol 1.5% + frontend 1% (no frontend -> treasury)
     expect(await quote.balanceOf(treasury.address)).to.equal(usdc(1.25));

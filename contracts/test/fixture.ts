@@ -53,6 +53,15 @@ export function tokensWith(demo: ReturnType<typeof buildDemoCollection>, type: s
 }
 
 export async function deployMachineWithInventory() {
+  return deployMachine({ floorListings: 2, pityThreshold: 40 });
+}
+
+/** Many floor listings and a low pity threshold, for pity tests. */
+export async function deployPityMachine() {
+  return deployMachine({ floorListings: 25, pityThreshold: 20 });
+}
+
+export async function deployMachine(opts: { floorListings: number; pityThreshold: number }) {
   const core = await deployCore();
   const { factory, quote, nft, bidBook, seller, bidder, lp, demo } = core;
 
@@ -62,6 +71,7 @@ export async function deployMachineWithInventory() {
     targetRtpBps: 8900,
     creatorFeeBps: 250,
     riskBps: 2500,
+    pityThreshold: opts.pityThreshold,
     tiers: TIERS,
     name: "Pod Apes Standard",
   });
@@ -93,7 +103,8 @@ export async function deployMachineWithInventory() {
   const used = new Set<number>();
   for (const [type, value, bidId] of picks) {
     const key = value === "None" ? COLLECTION_TRAIT : traitKey(type, value);
-    const ids = tokensWith(demo, type, value).filter((id) => !used.has(id)).slice(0, 2);
+    const count = value === "None" ? opts.floorListings : 2;
+    const ids = tokensWith(demo, type, value).filter((id) => !used.has(id)).slice(0, count);
     for (const id of ids) {
       used.add(id);
       const proof = key === COLLECTION_TRAIT ? [] : demo.proofs[id][key];

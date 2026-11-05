@@ -200,11 +200,11 @@ async function seedLocal(d: Deployment, demo: DemoCollection) {
   const tiers = (probs: number[]) =>
     bands.map(([lo, hi], i) => ({ minValue: usdc(lo), maxValue: usdc(hi), baseProbBps: probs[i] }));
   await factory.connect(maker).createMachine({
-    nft: nftAddr, spinPrice: usdc(50), targetRtpBps: 8900, creatorFeeBps: 250, riskBps: 2500,
+    nft: nftAddr, spinPrice: usdc(50), targetRtpBps: 8900, creatorFeeBps: 250, riskBps: 2500, pityThreshold: 40,
     tiers: tiers(standard), name: "Pod Apes · 标准机",
   });
   await factory.connect(maker).createMachine({
-    nft: nftAddr, spinPrice: usdc(50), targetRtpBps: 8800, creatorFeeBps: 250, riskBps: 2500,
+    nft: nftAddr, spinPrice: usdc(50), targetRtpBps: 8800, creatorFeeBps: 250, riskBps: 2500, pityThreshold: 40,
     tiers: tiers(chase), name: "Pod Apes · 追梦机",
   });
   const [m1Addr, m2Addr] = await factory.allMachines();
@@ -214,6 +214,9 @@ async function seedLocal(d: Deployment, demo: DemoCollection) {
   await quote.connect(lp).approve(m2Addr, ethers.MaxUint256);
   await machines[0].connect(lp).deposit(usdc(60_000));
   await machines[1].connect(lp).deposit(usdc(40_000));
+  // The creator pre-funds the standard machine's pity pool so pity draws are honoured from day one.
+  await quote.connect(maker).approve(m1Addr, ethers.MaxUint256);
+  await machines[0].connect(maker).fundPity(usdc(300));
 
   // Sellers consign with a floor 5% under the bid, so every listing is in range.
   let tokenId = 40;

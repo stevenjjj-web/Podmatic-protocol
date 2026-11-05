@@ -16,10 +16,16 @@ import {IRandomnessProvider, IRandomnessConsumer} from "./interfaces/IRandomness
 ///      - An NFT's value V is the price of a resting, funded collection or trait bid in the BidBook. Anyone can refresh
 ///        a listing with a higher eligible bid. The NFT is drawable when V * (1 + premium) >= the holder's floor.
 ///      - On a draw the machine earmarks that bid for the exit window, so the winner can always sell the NFT for V.
-///      - The seller receives V * (1 + premium) minus the pricing fee, which goes to the bidder who priced the NFT.
+///      - The seller receives V * (1 + premium) minus the pricing fee (to the bidder who priced the NFT) and, when the
+///        NFT was first consigned here by someone else, the circulation royalty (to that first consignor).
 ///      Odds: the creator sets tier bands, base probabilities and a target return. Each draw re-solves the probabilities
 ///      so the expected value equals the target, tilting toward the highest or lowest drawable tier (RTP lock).
 ///      Reserve: LPs fund payouts. A tier is drawable only if its maximum settlement fits within `riskBps` of the reserve.
+///      Inventory yield: every spin puts INVENTORY_BPS of the price into a yield pool, split across drawable tiers by
+///      their share of the spin's expected value and, within a tier, by listing value. A thinly stocked tier pays more
+///      per listing, which pulls supply to where it is missing.
+///      Pity: every spin puts PITY_BPS into a pity pool. After `pityThreshold` consecutive spins below the pity tier, a
+///      player's next spin draws only from the pity tier and above; the pool pays the reserve the extra expected cost.
 contract Machine is ReserveVault, IRandomnessConsumer {
     using SafeERC20 for IERC20;
 
@@ -35,6 +41,7 @@ contract Machine is ReserveVault, IRandomnessConsumer {
         uint16 targetRtpBps;
         uint16 creatorFeeBps;
         uint16 riskBps;
+        uint16 pityThreshold; // 0 disables pity
         Tier[] tiers;
         string name;
     }
@@ -67,6 +74,9 @@ contract Machine is ReserveVault, IRandomnessConsumer {
         uint8 tier;
         uint32 tierIndex;
         Status status;
+        uint64 listedAt;
+        uint128 pendingYield; // inventory yield settled into the listing, not yet paid
+        uint256 rewardDebt; // value * accYieldPerValue[tier] at the last checkpoint
     }
 
     struct SpinRequest {
@@ -86,15 +96,22 @@ contract Machine is ReserveVault, IRandomnessConsumer {
 
     uint16 public constant PROTOCOL_FEE_BPS = 150;
     uint16 public constant FRONTEND_FEE_BPS = 100;
+    uint16 public constant INVENTORY_BPS = 150; // of spin price, to consigned listings
+    uint16 public constant PITY_BPS = 100; // of spin price, to the pity pool
     uint16 public constant MAX_CREATOR_FEE_BPS = 300;
-    uint16 public constant PREMIUM_BPS = 300; // seller settlement premium over V
-    uint16 public constant PRICING_FEE_BPS = 50; // part of the premium paid to the bidder whose bid priced the NFT
+    uint16 public constant PREMIUM_BPS = 200; // seller settlement premium over V
+    uint16 public constant PRICING_FEE_BPS = 50; // of V, from the premium, to the bidder whose bid priced the NFT
+    uint16 public constant ROYALTY_BPS = 100; // of V, from the premium, to the NFT's first consignor in this machine
     uint16 public constant MIN_RTP_BPS = 8_500;
     uint16 public constant MAX_RTP_BPS = 9_700;
     uint16 public constant MIN_RISK_BPS = 500;
     uint16 public constant MAX_RISK_BPS = 2_500;
+    uint16 public constant MIN_PITY = 20;
+    uint16 public constant MAX_PITY = 100;
     uint64 public constant EXIT_WINDOW = 3 days;
     uint64 public constant SPIN_TIMEOUT = 1 days;
+    uint64 public constant YIELD_VESTING = 3 days; // yield is claimable once a listing has rested this long
+    uint64 public constant YIELD_FORFEIT_WINDOW = 7 days; // delisting earlier forfeits unpaid yield to the reserve
     uint256 public constant MAX_TIERS = 5;
     uint256 public constant NO_BID = type(uint256).max;
     uint256 internal constant ONE = 1e18;
@@ -114,19 +131,26 @@ contract Machine is ReserveVault, IRandomnessConsumer {
     uint16 public targetRtpBps;
     uint16 public creatorFeeBps;
     uint16 public riskBps;
+    uint16 public pityThreshold;
+    uint8 public pityTier;
 
     Tier[] internal _tiers;
     uint256[][5] internal _tierListings;
     uint256[5] public tierSum;
+    uint256[5] public accYieldPerValue; // 1e18-scaled yield per unit of listing value
 
     Listing[] internal _listings;
     mapping(uint256 requestId => SpinRequest) public spins;
+    mapping(uint256 tokenId => address) public firstConsignor;
+    mapping(address player => uint256) public pityCount;
     uint256 public pendingSpins;
     uint256 public pendingEscrow;
+    uint256 public pityPool;
+    uint256 public yieldLiability; // inventory yield allocated to listings and not yet paid or forfeited
 
     event Listed(uint256 indexed listingId, address indexed seller, uint256 indexed tokenId, uint256 floorPrice, bytes32 traitKey);
     event ValuationUpdated(uint256 indexed listingId, uint256 bidId, uint256 value, uint8 tier, bool active);
-    event Delisted(uint256 indexed listingId);
+    event Delisted(uint256 indexed listingId, uint256 yieldPaid, uint256 yieldForfeited);
     event SpinRequested(uint256 indexed requestId, address indexed player);
     event SpinSettled(
         uint256 indexed requestId,
@@ -135,9 +159,14 @@ contract Machine is ReserveVault, IRandomnessConsumer {
         uint256 tokenId,
         uint8 tier,
         uint256 value,
-        uint256 earmarkId
+        uint256 earmarkId,
+        bool pity
     );
     event SpinRefunded(uint256 indexed requestId, address indexed player);
+    event YieldAllocated(uint256 amount);
+    event YieldPaid(uint256 indexed listingId, address indexed seller, uint256 amount);
+    event RoyaltyPaid(uint256 indexed listingId, address indexed consignor, uint256 amount);
+    event PityFunded(address indexed from, uint256 amount);
 
     function initialize(Init calldata p, Deps calldata d) external {
         require(!initialized, "initialized");
@@ -146,6 +175,7 @@ contract Machine is ReserveVault, IRandomnessConsumer {
         require(p.targetRtpBps >= MIN_RTP_BPS && p.targetRtpBps <= MAX_RTP_BPS, "rtp");
         require(p.creatorFeeBps <= MAX_CREATOR_FEE_BPS, "creator fee");
         require(p.riskBps >= MIN_RISK_BPS && p.riskBps <= MAX_RISK_BPS, "risk");
+        require(p.pityThreshold == 0 || (p.pityThreshold >= MIN_PITY && p.pityThreshold <= MAX_PITY), "pity");
         require(p.spinPrice > 0, "price");
         uint256 n = p.tiers.length;
         require(n >= 2 && n <= MAX_TIERS, "tiers");
@@ -170,6 +200,8 @@ contract Machine is ReserveVault, IRandomnessConsumer {
         targetRtpBps = p.targetRtpBps;
         creatorFeeBps = p.creatorFeeBps;
         riskBps = p.riskBps;
+        pityThreshold = p.pityThreshold;
+        pityTier = uint8(n >= 3 ? 2 : n - 1);
 
         creator = d.creator;
         factory = d.factory;
@@ -182,8 +214,9 @@ contract Machine is ReserveVault, IRandomnessConsumer {
 
     // ------------------------------------------------------------------ reserve
 
+    /// @notice LP assets: cash minus pending spins, the pity pool and inventory yield owed to listings.
     function totalAssets() public view override returns (uint256) {
-        return quote.balanceOf(address(this)) - pendingEscrow;
+        return quote.balanceOf(address(this)) - pendingEscrow - pityPool - yieldLiability;
     }
 
     // ------------------------------------------------------------------ consignment
@@ -197,8 +230,11 @@ contract Machine is ReserveVault, IRandomnessConsumer {
         require(registry.verifyTrait(nft, tokenId, traitKey, proof), "trait proof");
         require(registry.isValuationTrait(nft, traitKey), "trait too rare");
         IERC721(nft).transferFrom(msg.sender, address(this), tokenId);
+        if (firstConsignor[tokenId] == address(0)) firstConsignor[tokenId] = msg.sender;
         listingId = _listings.length;
-        _listings.push(Listing(msg.sender, tokenId, floorPrice, 0, traitKey, NO_BID, 0, 0, Status.Idle));
+        _listings.push(
+            Listing(msg.sender, tokenId, floorPrice, 0, traitKey, NO_BID, 0, 0, Status.Idle, uint64(block.timestamp), 0, 0)
+        );
         emit Listed(listingId, msg.sender, tokenId, floorPrice, traitKey);
     }
 
@@ -232,6 +268,8 @@ contract Machine is ReserveVault, IRandomnessConsumer {
         emit ValuationUpdated(listingId, bidId, price, tier, l.status == Status.Active);
     }
 
+    /// @notice Withdraw a consigned NFT. Unpaid inventory yield is paid if the listing rested at least
+    ///         YIELD_FORFEIT_WINDOW, otherwise it returns to the reserve.
     function delist(uint256 listingId) external nonReentrant {
         Listing storage l = _listings[listingId];
         require(l.seller == msg.sender, "not seller");
@@ -239,8 +277,43 @@ contract Machine is ReserveVault, IRandomnessConsumer {
         if (l.status == Status.Active) require(pendingSpins == 0, "spins pending");
         _deactivate(listingId);
         l.status = Status.Delisted;
+        uint256 owed = l.pendingYield;
+        l.pendingYield = 0;
+        yieldLiability -= owed;
+        bool forfeit = block.timestamp < l.listedAt + YIELD_FORFEIT_WINDOW;
+        if (owed > 0 && !forfeit) quote.safeTransfer(msg.sender, owed);
         IERC721(nft).transferFrom(address(this), msg.sender, l.tokenId);
-        emit Delisted(listingId);
+        emit Delisted(listingId, forfeit ? 0 : owed, forfeit ? owed : 0);
+    }
+
+    /// @notice Anyone, typically the creator at launch, can top up the pity pool so pity draws are honoured early.
+    function fundPity(uint256 amount) external nonReentrant {
+        quote.safeTransferFrom(msg.sender, address(this), amount);
+        pityPool += amount;
+        emit PityFunded(msg.sender, amount);
+    }
+
+    /// @notice Inventory yield a listing has earned so far.
+    function pendingYieldOf(uint256 listingId) public view returns (uint256) {
+        Listing storage l = _listings[listingId];
+        uint256 owed = l.pendingYield;
+        if (l.status == Status.Active) owed += (uint256(l.value) * accYieldPerValue[l.tier]) / ONE - l.rewardDebt;
+        return owed;
+    }
+
+    /// @notice Claim inventory yield of a listing that has rested at least YIELD_VESTING.
+    function claimYield(uint256 listingId) external nonReentrant {
+        Listing storage l = _listings[listingId];
+        require(l.seller == msg.sender, "not seller");
+        require(l.status == Status.Idle || l.status == Status.Active, "closed");
+        require(block.timestamp >= l.listedAt + YIELD_VESTING, "vesting");
+        _checkpoint(l);
+        uint256 owed = l.pendingYield;
+        require(owed > 0, "nothing to claim");
+        l.pendingYield = 0;
+        yieldLiability -= owed;
+        quote.safeTransfer(msg.sender, owed);
+        emit YieldPaid(listingId, msg.sender, owed);
     }
 
     // ------------------------------------------------------------------ draws
@@ -265,15 +338,32 @@ contract Machine is ReserveVault, IRandomnessConsumer {
         pendingSpins -= 1;
         pendingEscrow -= spinPrice;
 
-        uint256 fees = _spinFees();
+        uint256 costs = _spinCosts();
+        bool pityDue = pityThreshold > 0 && pityCount[s.player] >= pityThreshold;
         for (uint256 attempt; attempt < ATTEMPTS; ++attempt) {
-            Odds memory o = _odds(totalAssets() - fees);
+            Odds memory o = _odds(totalAssets() - costs);
             if (!o.open) break;
+            uint256 pityExtra;
+            bool pity;
+            if (pityDue) {
+                (bool ok, uint256[5] memory probs, uint256 extra) = _pityOdds(o);
+                if (ok && extra <= pityPool) {
+                    o.probs = probs;
+                    pityExtra = extra;
+                    pity = true;
+                }
+            }
             uint256 r = uint256(keccak256(abi.encode(randomWord, attempt)));
             uint8 tier = _pickTier(o.probs, r % ONE);
             uint256[] storage pool = _tierListings[tier];
             uint256 listingId = pool[(r / ONE) % pool.length];
-            if (_trySettle(requestId, s, listingId)) return;
+            if (_trySettle(requestId, s, listingId, pity)) {
+                // The pity pool covers the extra expected cost of a pity draw; that money joins the reserve.
+                pityPool -= pityExtra;
+                pityCount[s.player] = tier >= pityTier ? 0 : pityCount[s.player] + 1;
+                _allocate(o);
+                return;
+            }
         }
         quote.safeTransfer(s.player, spinPrice);
         emit SpinRefunded(requestId, s.player);
@@ -292,7 +382,18 @@ contract Machine is ReserveVault, IRandomnessConsumer {
 
     /// @notice Odds for the next spin, computed as if it were paid now.
     function previewOdds() public view returns (Odds memory) {
-        return _odds(totalAssets() + spinPrice - _spinFees());
+        return _odds(totalAssets() + spinPrice - _spinCosts());
+    }
+
+    /// @notice Odds a player's next spin would use, including a pity draw when one is due and the pool can pay for it.
+    function previewOddsFor(address player) external view returns (Odds memory o, bool pity) {
+        o = previewOdds();
+        if (!o.open || pityThreshold == 0 || pityCount[player] < pityThreshold) return (o, false);
+        (bool ok, uint256[5] memory probs, uint256 extra) = _pityOdds(o);
+        if (ok && extra <= pityPool) {
+            o.probs = probs;
+            pity = true;
+        }
     }
 
     // ------------------------------------------------------------------ views
@@ -319,11 +420,13 @@ contract Machine is ReserveVault, IRandomnessConsumer {
 
     // ------------------------------------------------------------------ internals
 
-    function _spinFees() internal view returns (uint256) {
-        return (uint256(spinPrice) * (PROTOCOL_FEE_BPS + FRONTEND_FEE_BPS + creatorFeeBps)) / 10_000;
+    /// @dev Money a spin does not leave with LPs: fees paid out plus the inventory and pity allocations.
+    function _spinCosts() internal view returns (uint256) {
+        return (uint256(spinPrice) * (PROTOCOL_FEE_BPS + FRONTEND_FEE_BPS + creatorFeeBps + INVENTORY_BPS + PITY_BPS))
+            / 10_000;
     }
 
-    function _trySettle(uint256 requestId, SpinRequest memory s, uint256 listingId) internal returns (bool) {
+    function _trySettle(uint256 requestId, SpinRequest memory s, uint256 listingId, bool pity) internal returns (bool) {
         Listing storage l = _listings[listingId];
         // The bid may have changed since the listing was valued; a stale valuation is dropped and we redraw.
         if (bidBook.bids(l.bidId).price != l.value) {
@@ -347,13 +450,26 @@ contract Machine is ReserveVault, IRandomnessConsumer {
         _deactivate(listingId);
         l.status = Status.Sold;
 
-        uint256 settlement = (v * (10_000 + PREMIUM_BPS)) / 10_000;
-        uint256 pricingFee = (v * PRICING_FEE_BPS) / 10_000;
-        quote.safeTransfer(l.seller, settlement - pricingFee);
-        quote.safeTransfer(bidder, pricingFee);
+        uint256 sellerTake = (v * (10_000 + PREMIUM_BPS - PRICING_FEE_BPS)) / 10_000;
+        quote.safeTransfer(bidder, (v * PRICING_FEE_BPS) / 10_000);
+        address first = firstConsignor[l.tokenId];
+        if (first != address(0) && first != l.seller) {
+            uint256 royalty = (v * ROYALTY_BPS) / 10_000;
+            sellerTake -= royalty;
+            quote.safeTransfer(first, royalty);
+            emit RoyaltyPaid(listingId, first, royalty);
+        }
+        uint256 owed = l.pendingYield;
+        if (owed > 0) {
+            l.pendingYield = 0;
+            yieldLiability -= owed;
+            emit YieldPaid(listingId, l.seller, owed);
+        }
+        quote.safeTransfer(l.seller, sellerTake + owed);
         _payFees(s.frontend);
+        pityPool += (uint256(spinPrice) * PITY_BPS) / 10_000;
         IERC721(nft).transferFrom(address(this), s.player, l.tokenId);
-        emit SpinSettled(requestId, s.player, listingId, l.tokenId, tier, v, earmarkId);
+        emit SpinSettled(requestId, s.player, listingId, l.tokenId, tier, v, earmarkId, pity);
         return true;
     }
 
@@ -362,6 +478,47 @@ contract Machine is ReserveVault, IRandomnessConsumer {
         quote.safeTransfer(treasury, (price * PROTOCOL_FEE_BPS) / 10_000);
         quote.safeTransfer(frontend == address(0) ? treasury : frontend, (price * FRONTEND_FEE_BPS) / 10_000);
         if (creatorFeeBps > 0) quote.safeTransfer(creator, (price * creatorFeeBps) / 10_000);
+    }
+
+    /// @dev Splits this spin's inventory yield across drawable tiers by their share of expected value; within a tier
+    ///      it accrues per unit of listing value. If nothing is drawable, the amount stays with LPs.
+    function _allocate(Odds memory o) internal {
+        uint256 amount = (uint256(spinPrice) * INVENTORY_BPS) / 10_000;
+        uint256 n = _tiers.length;
+        uint256 weight;
+        for (uint256 k; k < n; ++k) {
+            if (tierSum[k] > 0 && o.live[k]) weight += o.probs[k] * o.evs[k];
+        }
+        if (weight == 0) return;
+        uint256 allocated;
+        for (uint256 k; k < n; ++k) {
+            if (tierSum[k] == 0 || !o.live[k]) continue;
+            uint256 share = (amount * o.probs[k] * o.evs[k]) / weight;
+            accYieldPerValue[k] += (share * ONE) / tierSum[k];
+            allocated += share;
+        }
+        yieldLiability += allocated;
+        emit YieldAllocated(allocated);
+    }
+
+    /// @dev Pity draw: base odds restricted to live tiers at or above `pityTier`. `extra` is how much more the draw is
+    ///      expected to cost the reserve than a normal draw, including the seller premium.
+    function _pityOdds(Odds memory o) internal view returns (bool ok, uint256[5] memory probs, uint256 extra) {
+        uint256 n = _tiers.length;
+        uint256 weight;
+        for (uint256 k = pityTier; k < n; ++k) {
+            if (o.live[k]) weight += _tiers[k].baseProbBps;
+        }
+        if (weight == 0) return (false, probs, 0);
+        uint256 e;
+        for (uint256 k = pityTier; k < n; ++k) {
+            if (!o.live[k]) continue;
+            probs[k] = (uint256(_tiers[k].baseProbBps) * ONE) / weight;
+            e += probs[k] * o.evs[k];
+        }
+        e /= ONE;
+        ok = true;
+        if (e > o.goal) extra = ((e - o.goal) * (10_000 + PREMIUM_BPS)) / 10_000;
     }
 
     /// @dev RTP lock. Live tiers: non-empty and whose largest settlement fits within riskBps of `avail`.
@@ -437,11 +594,20 @@ contract Machine is ReserveVault, IRandomnessConsumer {
         return (false, 0);
     }
 
+    /// @dev Moves accrued yield of an active listing into `pendingYield`.
+    function _checkpoint(Listing storage l) internal {
+        if (l.status != Status.Active) return;
+        uint256 accrued = (uint256(l.value) * accYieldPerValue[l.tier]) / ONE;
+        l.pendingYield += uint128(accrued - l.rewardDebt);
+        l.rewardDebt = accrued;
+    }
+
     function _activate(uint256 listingId, uint8 tier) internal {
         Listing storage l = _listings[listingId];
         l.tier = tier;
         l.tierIndex = uint32(_tierListings[tier].length);
         l.status = Status.Active;
+        l.rewardDebt = (uint256(l.value) * accYieldPerValue[tier]) / ONE;
         _tierListings[tier].push(listingId);
         tierSum[tier] += l.value;
     }
@@ -449,6 +615,7 @@ contract Machine is ReserveVault, IRandomnessConsumer {
     function _deactivate(uint256 listingId) internal {
         Listing storage l = _listings[listingId];
         if (l.status != Status.Active) return;
+        _checkpoint(l);
         uint256[] storage pool = _tierListings[l.tier];
         uint256 lastId = pool[pool.length - 1];
         pool[l.tierIndex] = lastId;

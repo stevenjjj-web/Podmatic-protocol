@@ -18,13 +18,16 @@ import { fmtDuration, fmtUsdc, parseUsdc } from "../lib/format";
 import { COLLECTION_TRAIT, proofFor, tokenTraitKeys, tokenTraits, traitLabel } from "../lib/traits";
 
 type Exit = "bid" | "machine" | "pool" | "odds";
-const PREMIUM_BPS = 300n;
+const PREMIUM_BPS = 200n;
+const PRICING_FEE_BPS = 50n;
+const YIELD_VESTING = 3n * 86400n;
+const YIELD_FORFEIT = 7n * 86400n;
 
 function tierFor(m: MachineInfo, value: bigint) {
   return m.tiers.findIndex((t) => value >= t.minValue && value <= t.maxValue);
 }
 
-function SellPanel({ tokenId, bids, onDone }: { tokenId: bigint; bids: Bid[]; onDone: () => void }) {
+function SellPanel({ tokenId, bids, bidsLoading, onDone }: { tokenId: bigint; bids: Bid[]; bidsLoading: boolean; onDone: () => void }) {
   const { deployment, collection } = useDeployment();
   const { machines } = useMachines();
   const { orders } = useFloorOrders();
@@ -68,9 +71,18 @@ function SellPanel({ tokenId, bids, onDone }: { tokenId: bigint; bids: Bid[]; on
     );
     if (!receipt) return;
     const [listed] = parseEventLogs({ abi: machineAbi, logs: receipt.logs, eventName: "Listed" });
-    if (listed && valuation) {
+    // Re-check eligibility on chain rather than trusting cached reads: the cache may still be loading.
+    const candidates = [valuation, fill].filter((b): b is Bid => !!b && b.traitKey === traitForListing);
+    let bidId: number | undefined;
+    for (const b of candidates) {
+      const ok = await client.readContract({
+        address: deployment!.bidBook, abi: bidBookAbi, functionName: "isValuationEligible", args: [BigInt(b.id), nft, b.traitKey],
+      });
+      if (ok) { bidId = b.id; break; }
+    }
+    if (listed && bidId !== undefined) {
       await run("按买单估值，进入可抽区间", (w) =>
-        w({ address: machine.address, abi: machineAbi, functionName: "refreshValuation", args: [listed.args.listingId, BigInt(valuation.id)] }),
+        w({ address: machine.address, abi: machineAbi, functionName: "refreshValuation", args: [listed.args.listingId, BigInt(bidId)] }),
       );
     }
     onDone();
@@ -134,20 +146,24 @@ function SellPanel({ tokenId, bids, onDone }: { tokenId: bigint; bids: Bid[]; on
             label="底价：低于这个价不卖"
             value={floor || defaultFloor}
             onChange={setFloor}
-            footer={<><span>被抽中时到手 ≈ ${fmtUsdc((settlement * 995n) / 1000n)}</span><span>估值 × 1.03 − 0.5% 定价费</span></>}
+            footer={<><span>被抽中时到手 ≈ ${fmtUsdc(valuation ? (valuation.price * (10000n + PREMIUM_BPS - PRICING_FEE_BPS)) / 10000n : 0n)} ＋ 库存收益</span><span>估值 × 1.015</span></>}
           />
           {valuation ? (
             drawable ? (
-              <div className="notice notice-info">✓ 进入{TIER_NAMES[tier]}档，可被抽中。成交价由买单决定，与底价无关。</div>
+              <div className="notice notice-info">
+                ✓ 进入{TIER_NAMES[tier]}档，可被抽中。成交价由买单决定，与底价无关。在架期间分享每抽 1.5% 的库存收益（挂满 3 天可领，7 天内撤回则没收）；这件 NFT 以后被别人再寄售卖出时，你还能拿估值的 1% 流通分成。
+              </div>
             ) : (
               <div className="notice notice-warn">
-                {tier < 0 ? "估值不在这台机器的档位范围内。" : "底价高于估值 × 1.03，暂时不会被抽中；买单涨上来后会自动进入区间。"}
+                {tier < 0 ? "估值不在这台机器的档位范围内。" : "底价高于估值 × 1.02，暂时不会被抽中；买单涨上来后会自动进入区间。"}
               </div>
             )
           ) : (
             <div className="notice notice-neutral">还没有能给它估值的有效买单。可以先寄售，等买单出现后任何人都能刷新估值。</div>
           )}
-          <button className="btn btn-primary btn-lg" disabled={busy || !machine} onClick={consign}>寄售到机器</button>
+          <button className="btn btn-primary btn-lg" disabled={busy || !machine || bidsLoading} onClick={consign}>
+            {bidsLoading ? "读取买单中…" : "寄售到机器"}
+          </button>
         </div>
       )}
 
@@ -259,9 +275,14 @@ function MyListings() {
     Array.from({ length: Number(m.listingCount) }, (_, i) => ({ address: m.address, abi: machineAbi, functionName: "listings" as const, args: [BigInt(i)] as const })),
   );
   const rows = useReadContracts({ contracts: calls, query: { enabled: calls.length > 0, refetchInterval: 5000 } });
+  const now = useChainTime();
   const mine = (rows.data ?? [])
-    .map((r, i) => ({ l: r.result as { seller: Address; tokenId: bigint; floorPrice: bigint; value: bigint; status: number; tier: number } | undefined, call: calls[i] }))
+    .map((r, i) => ({ l: r.result as { seller: Address; tokenId: bigint; floorPrice: bigint; value: bigint; status: number; tier: number; listedAt: bigint } | undefined, call: calls[i] }))
     .filter((x) => x.l && address && x.l.seller.toLowerCase() === address.toLowerCase() && (x.l.status === 1 || x.l.status === 2));
+  const yields = useReadContracts({
+    contracts: mine.map(({ call }) => ({ address: call.address, abi: machineAbi, functionName: "pendingYieldOf" as const, args: call.args })),
+    query: { enabled: mine.length > 0, refetchInterval: 5000 },
+  });
   const myOdds = oddsListings.filter((l) => address && l.seller.toLowerCase() === address.toLowerCase() && l.active);
   if (!mine.length && !myOdds.length) return null;
   return (
@@ -269,10 +290,13 @@ function MyListings() {
       <div className="h3">我挂出的</div>
       <div className="table-wrap">
         <table className="table">
-          <thead><tr><th>NFT</th><th>位置</th><th>底价 / 要价</th><th>估值</th><th>状态</th><th /></tr></thead>
+          <thead><tr><th>NFT</th><th>位置</th><th>底价 / 要价</th><th>估值</th><th>状态</th><th>库存收益</th><th /></tr></thead>
           <tbody>
-            {mine.map(({ l, call }) => {
+            {mine.map(({ l, call }, idx) => {
               const m = machines.find((x) => x.address === call.address)!;
+              const owed = (yields.data?.[idx]?.result as bigint | undefined) ?? 0n;
+              const vested = now !== undefined && now >= l!.listedAt + YIELD_VESTING;
+              const safeToDelist = now !== undefined && now >= l!.listedAt + YIELD_FORFEIT;
               return (
                 <tr key={`${call.address}-${call.args[0]}`}>
                   <td><div className="row"><NftArt tokenId={l!.tokenId} traits={tokenTraits(collection, l!.tokenId)} size={32} rounded={8} />#{Number(l!.tokenId)}</div></td>
@@ -281,9 +305,20 @@ function MyListings() {
                   <td>{l!.value ? `$${fmtUsdc(l!.value)}` : "—"}</td>
                   <td>{l!.status === 2 ? <span className="badge badge-ok">可抽 · {TIER_NAMES[l!.tier]}</span> : <span className="badge">区间外</span>}</td>
                   <td>
+                    <div className="row">
+                      <span className="mono">${fmtUsdc(owed, 4)}</span>
+                      <button className="btn btn-sm btn-soft" disabled={busy || !vested || owed === 0n}
+                        title={vested ? "" : "挂满 3 天后可领"}
+                        onClick={() => run(`领取库存收益 #${Number(l!.tokenId)}`, (w) => w({ address: call.address, abi: machineAbi, functionName: "claimYield", args: call.args }))}>
+                        {vested ? "领取" : "未满 3 天"}
+                      </button>
+                    </div>
+                  </td>
+                  <td>
                     <button className="btn btn-sm btn-ghost" disabled={busy}
+                      title={safeToDelist ? "" : "挂单未满 7 天，撤回会没收未领的库存收益"}
                       onClick={() => run(`撤回 #${Number(l!.tokenId)}`, (w) => w({ address: call.address, abi: machineAbi, functionName: "delist", args: call.args }))}>
-                      撤回
+                      撤回{!safeToDelist && owed > 0n ? "（没收收益）" : ""}
                     </button>
                   </td>
                 </tr>
@@ -296,6 +331,7 @@ function MyListings() {
                 <td>${fmtUsdc(l.ask)}</td>
                 <td>—</td>
                 <td>{l.pending ? <span className="badge badge-warn">开奖中</span> : <span className="badge badge-ok">挂出中</span>}</td>
+                <td>—</td>
                 <td>
                   <button className="btn btn-sm btn-ghost" disabled={busy || l.pending}
                     onClick={() => run(`撤回 #${Number(l.tokenId)}`, (w) => w({ address: deployment!.odds, abi: oddsAbi, functionName: "delist", args: [BigInt(l.id)] }))}>
@@ -315,7 +351,7 @@ export function Sell() {
   const { address } = useAccount();
   const { collection, deployment } = useDeployment();
   const { tokens, isLoading } = useMyNfts();
-  const { bids } = useBids();
+  const { bids, isLoading: bidsLoading } = useBids();
   const [selected, setSelected] = useState<bigint | undefined>();
   const current = selected !== undefined && tokens.includes(selected) ? selected : tokens[0];
 
@@ -357,7 +393,7 @@ export function Sell() {
             </div>
           )}
         </div>
-        {current !== undefined && <SellPanel tokenId={current} bids={bids} onDone={() => setSelected(undefined)} />}
+        {current !== undefined && <SellPanel tokenId={current} bids={bids} bidsLoading={bidsLoading} onDone={() => setSelected(undefined)} />}
       </div>
       <MyListings />
     </div>

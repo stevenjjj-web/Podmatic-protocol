@@ -29,6 +29,7 @@ export function Create() {
   const [rtp, setRtp] = useState(89);
   const [creatorFee, setCreatorFee] = useState(2.5);
   const [risk, setRisk] = useState(25);
+  const [pity, setPity] = useState(40);
 
   const p = parseUsdc(price);
   const tiers = BANDS.map(([lo, hi], i) => ({
@@ -50,6 +51,7 @@ export function Create() {
           targetRtpBps: Math.round(rtp * 100),
           creatorFeeBps: Math.round(creatorFee * 100),
           riskBps: Math.round(risk * 100),
+          pityThreshold: pity,
           tiers,
           name,
         }],
@@ -107,6 +109,11 @@ export function Create() {
             </div>
           </div>
           <div className="small faint">风险系数：单件奖品结算额不超过储备的这个比例。只有种子储备时建议 10%。</div>
+          <div className="stack-sm">
+            <div className="between"><span className="field-label">保底阈值</span><span className="mono">{pity === 0 ? "关闭" : `连续 ${pity} 抽`}</span></div>
+            <input type="range" min={0} max={100} step={5} value={pity} onChange={(e) => { const v = Number(e.target.value); setPity(v > 0 && v < 20 ? 20 : v); }} />
+            <div className="small faint">连续这么多抽没出稀有及以上，下一抽只在稀有及以上档抽，额外成本由保底池（每抽 1%）支付。建议 40；可以开机后用 fundPity 预存保底池。</div>
+          </div>
         </div>
         <div className="card swap-card stack sticky">
           <div className="h3">预览</div>

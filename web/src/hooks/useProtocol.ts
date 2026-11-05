@@ -27,6 +27,10 @@ export type MachineInfo = {
   tiers: Tier[];
   tierSizes: number[];
   odds: Odds;
+  pityThreshold: number;
+  pityTier: number;
+  pityPool: bigint;
+  yieldLiability: bigint;
 };
 
 export function useUsdcBalance(owner?: Address) {
@@ -54,6 +58,7 @@ export function useMachineAddresses() {
 const MACHINE_FIELDS = [
   "name", "nft", "creator", "spinPrice", "targetRtpBps", "creatorFeeBps", "riskBps",
   "totalAssets", "totalShares", "pendingSpins", "listingCount", "tierCount", "previewOdds",
+  "pityThreshold", "pityTier", "pityPool", "yieldLiability",
 ] as const;
 
 export function useMachines(filter?: Address) {
@@ -105,6 +110,10 @@ export function useMachines(filter?: Address) {
         tiers: t,
         tierSizes: sizes,
         odds,
+        pityThreshold: Number(r(13) ?? 0),
+        pityTier: Number(r(14) ?? 2),
+        pityPool: r(15) ?? 0n,
+        yieldLiability: r(16) ?? 0n,
       };
     });
   }, [base.data, tiers.data, addresses.join(), tierCounts.join()]);
@@ -159,7 +168,7 @@ export function useBids() {
         .filter((b): b is Bid => !!b),
     [raw.data, elig.data],
   );
-  return { bids, isLoading: count.isLoading || raw.isLoading };
+  return { bids, isLoading: count.isLoading || raw.isLoading || (rows.length > 0 && elig.isLoading) };
 }
 
 /** Highest active bid that can buy this token right now (any age), and the highest that can value it in a machine. */
@@ -288,4 +297,22 @@ export function useMyNfts() {
     [ids.data],
   );
   return { nft, tokens, isLoading: bal.isLoading || ids.isLoading };
+}
+
+/** A player's pity progress on a machine and the odds their next spin would use. */
+export function usePity(machine?: Address) {
+  const { address } = useAccount();
+  const q = useReadContracts({
+    contracts: [
+      { address: machine, abi: machineAbi, functionName: "pityCount", args: address ? [address] : undefined },
+      { address: machine, abi: machineAbi, functionName: "previewOddsFor", args: address ? [address] : undefined },
+    ],
+    query: { enabled: !!machine && !!address, ...POLL },
+  });
+  const forPlayer = q.data?.[1]?.result as readonly [Odds, boolean] | undefined;
+  return {
+    count: Number((q.data?.[0]?.result as bigint | undefined) ?? 0n),
+    odds: forPlayer?.[0],
+    due: forPlayer?.[1] ?? false,
+  };
 }
